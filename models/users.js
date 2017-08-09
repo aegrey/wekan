@@ -334,6 +334,28 @@ Meteor.methods({
     check(limit, Number);
     Meteor.user().setShowCardsCountAt(limit);
   },
+  setEmail(email) {
+    check(email, String);
+    const existingUser = Users.findOne({ 'emails.address': email }, { fields: { _id: 1 } });
+    if (existingUser) {
+      throw new Meteor.Error('email-already-taken');
+    } else {
+      Users.update(this.userId, {
+        $set: {
+          emails: [{
+            address: email,
+            verified: false,
+          }],
+        },
+      });
+    }
+  },
+  setUsernameAndEmail(username, email) {
+    check(username, String);
+    check(email, String);
+    Meteor.call('setUsername', username);
+    Meteor.call('setEmail', email);
+  },
 });
 
 if (Meteor.isServer) {
@@ -527,7 +549,18 @@ if (Meteor.isServer) {
 
 // USERS REST API
 if (Meteor.isServer) {
+  JsonRoutes.add('GET', '/api/user', function(req, res, next) {
+    Authentication.checkLoggedIn(req.userId);
+    const data = Meteor.users.findOne({ _id: req.userId});
+    delete data.services;
+    JsonRoutes.sendResult(res, {
+      code: 200,
+      data,
+    });
+  });
+
   JsonRoutes.add('GET', '/api/users', function (req, res, next) {
+    Authentication.checkUserId( req.userId);
     JsonRoutes.sendResult(res, {
       code: 200,
       data: Meteor.users.find({}).map(function (doc) {
@@ -536,6 +569,7 @@ if (Meteor.isServer) {
     });
   });
   JsonRoutes.add('GET', '/api/users/:id', function (req, res, next) {
+    Authentication.checkUserId( req.userId);
     const id = req.params.id;
     JsonRoutes.sendResult(res, {
       code: 200,
@@ -543,6 +577,7 @@ if (Meteor.isServer) {
     });
   });
   JsonRoutes.add('POST', '/api/users/', function (req, res, next) {
+    Authentication.checkUserId( req.userId);
     const id = Accounts.createUser({
       username: req.body.username,
       email: req.body.email,
@@ -558,6 +593,7 @@ if (Meteor.isServer) {
   });
 
   JsonRoutes.add('DELETE', '/api/users/:id', function (req, res, next) {
+    Authentication.checkUserId( req.userId);
     const id = req.params.id;
     Meteor.users.remove({ _id: id });
     JsonRoutes.sendResult(res, {

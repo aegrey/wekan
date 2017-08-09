@@ -38,6 +38,9 @@ Activities.helpers({
   checklist() {
     return Checklists.findOne(this.checklistId);
   },
+  checklistItem() {
+    return Checklists.findOne(this.checklistId).getItem(this.checklistItemId);
+  },
 });
 
 Activities.before.insert((userId, doc) => {
@@ -131,5 +134,10 @@ if (Meteor.isServer) {
     Notifications.getUsers(participants, watchers).forEach((user) => {
       Notifications.notify(user, title, description, params);
     });
+
+    const integration = Integrations.findOne({ boardId: board._id, type: 'outgoing-webhooks', enabled: true });
+    if (integration) {
+      Meteor.call('outgoingWebhooks', integration, description, params);
+    }
   });
 }

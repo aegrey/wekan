@@ -31,10 +31,8 @@ mquandalle:collection-mutations
 accounts-password@1.3.5
 kenton:accounts-sandstorm
 service-configuration@1.0.11
-useraccounts:core
 useraccounts:unstyled
 useraccounts:flow-routing
-email@1.2.0
 
 # Utilities
 check@1.2.5
@@ -58,6 +56,7 @@ mquandalle:moment
 ongoworks:speakingurl
 raix:handlebar-helpers
 tap:i18n
+http
 
 # UI components
 blaze
@@ -77,3 +76,6 @@ simple:json-routes
 rajit:bootstrap3-datepicker
 kadira:flow-router
 shell-server@0.2.3
+simple:rest-accounts-password
+useraccounts:core
+email@1.2.3
