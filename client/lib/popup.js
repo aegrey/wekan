@@ -1,12 +1,14 @@
-window.Popup = new class {
+import { TAPi18n } from '/imports/i18n';
+
+window.Popup = new (class {
   constructor() {
     // The template we use to render popups
     this.template = Template.popup;
 
     // We only want to display one popup at a time and we keep the view object
-    // in this `Popup._current` variable. If there is no popup currently opened
+    // in this `Popup.current` variable. If there is no popup currently opened
     // the value is `null`.
-    this._current = null;
+    this.current = null;
 
     // It's possible to open a sub-popup B from a popup A. In that case we keep
     // the data of popup A so we can return back to it. Every time we open a new
@@ -27,12 +29,14 @@ window.Popup = new class {
   open(name) {
     const self = this;
     const popupName = `${name}Popup`;
-
     function clickFromPopup(evt) {
       return $(evt.target).closest('.js-pop-over').length !== 0;
     }
-
-    return function(evt) {
+    /** opens the popup
+     * @param evt the current event
+     * @param options options (dataContextIfCurrentDataIsUndefined use this dataContext if this.currentData() is undefined)
+     */
+    return function(evt, options) {
       // If a popup is already opened, clicking again on the opener element
       // should close it -- and interrupt the current `open` function.
       if (self.isOpen()) {
@@ -51,13 +55,12 @@ window.Popup = new class {
       // has one. This allows us to position a sub-popup exactly at the same
       // position than its parent.
       let openerElement;
-      if (clickFromPopup(evt)) {
+      if (clickFromPopup(evt) && self._getTopStack()) {
         openerElement = self._getTopStack().openerElement;
       } else {
         self._stack = [];
         openerElement = evt.currentTarget;
       }
-
       $(openerElement).addClass('is-active');
       evt.preventDefault();
 
@@ -70,8 +73,16 @@ window.Popup = new class {
         title: self._getTitle(popupName),
         depth: self._stack.length,
         offset: self._getOffset(openerElement),
-        dataContext: this.currentData && this.currentData() || this,
+        dataContext: (this && this.currentData && this.currentData()) || (options && options.dataContextIfCurrentDataIsUndefined) || this,
       });
+
+      const $contentWrapper = $('.content-wrapper')
+      if ($contentWrapper.length > 0) {
+        const contentWrapper = $contentWrapper[0];
+        self._getTopStack().scrollTop = contentWrapper.scrollTop;
+        // scroll from e.g. delete comment to the top (where the confirm button is)
+        $contentWrapper.scrollTop(0);
+      }
 
       // If there are no popup currently opened we use the Blaze API to render
       // one into the DOM. We use a reactive function as the data parameter that
@@ -83,11 +94,14 @@ window.Popup = new class {
       // our internal dependency, and since we just changed the top element of
       // our internal stack, the popup will be updated with the new data.
       if (!self.isOpen()) {
-        self.current = Blaze.renderWithData(self.template, () => {
-          self._dep.depend();
-          return { ...self._getTopStack(), stack: self._stack };
-        }, document.body);
-
+        self.current = Blaze.renderWithData(
+          self.template,
+          () => {
+            self._dep.depend();
+            return { ...self._getTopStack(), stack: self._stack };
+          },
+          document.body,
+        );
       } else {
         self._dep.changed();
       }
@@ -104,7 +118,7 @@ window.Popup = new class {
     const self = this;
 
     return function(evt, tpl) {
-      const context = this.currentData && this.currentData() || this;
+      const context = (this.currentData && this.currentData()) || this;
       context.__afterConfirmAction = action;
       self.open(name).call(context, evt, tpl);
     };
@@ -123,6 +137,21 @@ window.Popup = new class {
   /// steps back is greater than the popup stack size, the popup will be closed.
   back(n = 1) {
     if (this._stack.length > n) {
+      const $contentWrapper = $('.content-wrapper')
+      if ($contentWrapper.length > 0) {
+        const contentWrapper = $contentWrapper[0];
+        const stack = this._stack[this._stack.length - n];
+        // scrollTopMax and scrollLeftMax only available at Firefox (https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollTopMax)
+        const scrollTopMax = contentWrapper.scrollTopMax || contentWrapper.scrollHeight - contentWrapper.clientHeight;
+        if (scrollTopMax && stack.scrollTop > scrollTopMax) {
+          // sometimes scrollTopMax is lower than scrollTop, so i need this dirty hack
+          setTimeout(() => {
+            $contentWrapper.scrollTop(stack.scrollTop);
+          }, 6);
+        }
+        // restore the old popup scroll position
+        $contentWrapper.scrollTop(stack.scrollTop);
+      }
       _.times(n, () => this._stack.pop());
       this._dep.changed();
     } else {
@@ -143,12 +172,12 @@ window.Popup = new class {
     }
   }
 
-  getOpenerComponent() {
-    const { openerElement } = Template.parentData(4);
+  getOpenerComponent(n=4) {
+    const { openerElement } = Template.parentData(n);
     return BlazeComponent.getComponentForElement(openerElement);
   }
 
-  // An utility fonction that returns the top element of the internal stack
+  // An utility function that returns the top element of the internal stack
   _getTopStack() {
     return this._stack[this._stack.length - 1];
   }
@@ -161,7 +190,7 @@ window.Popup = new class {
     return () => {
       Utils.windowResizeDep.depend();
 
-      if(Utils.isMiniScreen()) return { left:0, top:0 };
+      if (Utils.isMiniScreen()) return { left: 0, top: 0 };
 
       const offset = $element.offset();
       const popupWidth = 300 + 15;
@@ -186,23 +215,23 @@ window.Popup = new class {
       // positives.
       const title = TAPi18n.__(translationKey);
       // when popup showed as full of small screen, we need a default header to clearly see [X] button
-      const defaultTitle = Utils.isMiniScreen() ? 'Wekan' : false;
+      const defaultTitle = Utils.isMiniScreen() ? '' : false;
       return title !== translationKey ? title : defaultTitle;
     };
   }
-};
+})();
 
 // We close a potential opened popup on any left click on the document, or go
 // one step back by pressing escape.
 const escapeActions = ['back', 'close'];
-escapeActions.forEach((actionName) => {
-  EscapeActions.register(`popup-${actionName}`,
+escapeActions.forEach(actionName => {
+  EscapeActions.register(
+    `popup-${actionName}`,
     () => Popup[actionName](),
     () => Popup.isOpen(),
     {
-      noClickEscapeOn: '.js-pop-over',
+      noClickEscapeOn: '.js-pop-over,.js-open-card-title-popup,.js-open-inlined-form',
       enabledOnClick: actionName === 'close',
-    }
+    },
   );
 });
-

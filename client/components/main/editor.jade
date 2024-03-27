@@ -1,5 +1,9 @@
 template(name="editor")
+  a.fa.fa-brands.fa-markdown(title="{{_ 'convert-to-markdown'}}")
+  a.fa.fa-copy(title="{{_ 'copy-text-to-clipboard'}}")
+  span.copied-tooltip {{_ 'copied'}}
   textarea.editor(
+    dir="auto"
     class="{{class}}"
     id=id
     autofocus=autofocus
@@ -7,8 +11,7 @@ template(name="editor")
     +Template.contentBlock
 
 template(name="viewer")
-  .viewer
+  .viewer(dir="auto")
     +mentions
-      +emoji
-        +markdown
-          {{> UI.contentBlock }}
+      +markdown
+        {{> UI.contentBlock }}

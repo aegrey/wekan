@@ -1,8 +1,11 @@
+import { ReactiveCache } from '/imports/reactiveCache';
+
 const commentFormIsOpen = new ReactiveVar(false);
 
 BlazeComponent.extendComponent({
   onDestroyed() {
     commentFormIsOpen.set(false);
+    $('.note-popover').hide();
   },
 
   commentFormIsOpen() {
@@ -14,38 +17,47 @@ BlazeComponent.extendComponent({
   },
 
   events() {
-    return [{
-      'click .js-new-comment:not(.focus)'() {
-        commentFormIsOpen.set(true);
+    return [
+      {
+        'submit .js-new-comment-form'(evt) {
+          const input = this.getInput();
+          const text = input.val().trim();
+          const card = this.currentData();
+          let boardId = card.boardId;
+          let cardId = card._id;
+          if (card.isLinkedCard()) {
+            boardId = ReactiveCache.getCard(card.linkedId).boardId;
+            cardId = card.linkedId;
+          } else if (card.isLinkedBoard()) {
+            boardId = card.linkedId;
+          }
+          if (text) {
+            CardComments.insert({
+              text,
+              boardId,
+              cardId,
+            });
+            resetCommentInput(input);
+            Tracker.flush();
+            autosize.update(input);
+            input.trigger('submitted');
+          }
+          evt.preventDefault();
+        },
+        // Pressing Ctrl+Enter should submit the form
+        'keydown form textarea'(evt) {
+          if (evt.keyCode === 13 && (evt.metaKey || evt.ctrlKey)) {
+            this.find('button[type=submit]').click();
+          }
+        },
       },
-      'submit .js-new-comment-form'(evt) {
-        const input = this.getInput();
-        const text = input.val().trim();
-        if (text) {
-          CardComments.insert({
-            text,
-            boardId: this.currentData().boardId,
-            cardId: this.currentData()._id,
-          });
-          resetCommentInput(input);
-          Tracker.flush();
-          autosize.update(input);
-        }
-        evt.preventDefault();
-      },
-      // Pressing Ctrl+Enter should submit the form
-      'keydown form textarea'(evt) {
-        if (evt.keyCode === 13 && (evt.metaKey || evt.ctrlKey)) {
-          this.find('button[type=submit]').click();
-        }
-      },
-    }];
+    ];
   },
 }).register('commentForm');
 
 // XXX This should be a static method of the `commentForm` component
 function resetCommentInput(input) {
-  input.val('');
+  input.val(''); // without manually trigger, input event won't be fired
   input.blur();
   commentFormIsOpen.set(false);
 }
@@ -56,17 +68,18 @@ function resetCommentInput(input) {
 // Tracker.autorun to register the component dependencies, and re-run when these
 // dependencies are invalidated. A better component API would remove this hack.
 Tracker.autorun(() => {
-  Session.get('currentCard');
+  Utils.getCurrentCardId();
   Tracker.afterFlush(() => {
     autosize.update($('.js-new-comment-input'));
   });
 });
 
-EscapeActions.register('inlinedForm',
+EscapeActions.register(
+  'inlinedForm',
   () => {
     const draftKey = {
       fieldName: 'cardComment',
-      docId: Session.get('currentCard'),
+      docId: Utils.getCurrentCardId(),
     };
     const commentInput = $('.js-new-comment-input');
     const draft = commentInput.val().trim();
@@ -77,7 +90,10 @@ EscapeActions.register('inlinedForm',
     }
     resetCommentInput(commentInput);
   },
-  () => { return commentFormIsOpen.get(); }, {
+  () => {
+    return commentFormIsOpen.get();
+  },
+  {
     noClickEscapeOn: '.js-new-comment',
-  }
+  },
 );

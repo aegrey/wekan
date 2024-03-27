@@ -29,10 +29,15 @@ InlinedForm = BlazeComponent.extendComponent({
   },
 
   open(evt) {
-    evt && evt.preventDefault();
+    if (evt) {
+      evt.preventDefault();
+      // Close currently opened form, if any
+      EscapeActions.clickExecute(evt.target, 'inlinedForm');
+    } else {
+      // Close currently opened form, if any
+      EscapeActions.executeUpTo('inlinedForm');
+    }
 
-    // Close currently opened form, if any
-    EscapeActions.executeUpTo('inlinedForm');
     this.isOpen.set(true);
     currentlyOpenedForm.set(this);
   },
@@ -44,37 +49,56 @@ InlinedForm = BlazeComponent.extendComponent({
 
   getValue() {
     const input = this.find('textarea,input[type=text]');
-    return this.isOpen.get() && input && input.value;
+    // \s without \n + unicode (https://developer.mozilla.org/de/docs/Web/JavaScript/Guide/Regular_Expressions#special-white-space)
+    return this.isOpen.get() && input && input.value.replaceAll(/[ \f\r\t\v]+$/gm, '');
   },
 
   events() {
-    return [{
-      'click .js-close-inlined-form': this.close,
-      'click .js-open-inlined-form': this.open,
+    return [
+      {
+        'click .js-close-inlined-form': this.close,
+        'click .js-open-inlined-form': this.open,
 
-      // Pressing Ctrl+Enter should submit the form
-      'keydown form textarea'(evt) {
-        if (evt.keyCode === 13 && (evt.metaKey || evt.ctrlKey)) {
-          this.find('button[type=submit]').click();
-        }
-      },
+        // Pressing Ctrl+Enter should submit the form
+        'keydown form textarea'(evt) {
+          if (evt.keyCode === 13 && (evt.metaKey || evt.ctrlKey)) {
+            this.find('button[type=submit]').click();
+          }
+        },
 
-      // Close the inlined form when after its submission
-      submit() {
-        if (this.currentData().autoclose !== false) {
-          Tracker.afterFlush(() => {
-            this.close();
-          });
-        }
+        // Close the inlined form when after its submission
+        submit() {
+          if (this.currentData().autoclose !== false) {
+            Tracker.afterFlush(() => {
+              this.close();
+            });
+          }
+        },
       },
-    }];
+    ];
   },
 }).register('inlinedForm');
 
 // Press escape to close the currently opened inlinedForm
-EscapeActions.register('inlinedForm',
-  () => { currentlyOpenedForm.get().close(); },
-  () => { return currentlyOpenedForm.get() !== null; }, {
-    noClickEscapeOn: '.js-inlined-form',
-  }
+EscapeActions.register(
+  'inlinedForm',
+  () => {
+    currentlyOpenedForm.get().close();
+  },
+  () => {
+    return currentlyOpenedForm.get() !== null;
+  },
+  {
+    enabledOnClick: false,
+  },
 );
+
+// submit on click outside
+//document.addEventListener('click', function(evt) {
+//  const openedForm = currentlyOpenedForm.get();
+//  const isClickOutside = $(evt.target).closest('.js-inlined-form').length === 0;
+//  if (openedForm && isClickOutside) {
+//    $('.js-inlined-form button[type=submit]').click();
+//    openedForm.close();
+//  }
+//}, true);

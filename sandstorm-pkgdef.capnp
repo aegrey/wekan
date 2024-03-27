@@ -22,10 +22,10 @@ const pkgdef :Spk.PackageDefinition = (
     appTitle = (defaultText = "Wekan"),
     # The name of the app as it is displayed to the user.
 
-    appVersion = 20,
+    appVersion = 741,
     # Increment this for every release.
 
-    appMarketingVersion = (defaultText = "0.32.0~2017-07-30"),
+    appMarketingVersion = (defaultText = "7.41.0~2024-03-18"),
     # Human-readable presentation of the app version.
 
     minUpgradableAppVersion = 0,
@@ -63,9 +63,8 @@ const pkgdef :Spk.PackageDefinition = (
       categories = [productivity, office],
 
       author = (
-        upstreamAuthor = "Maxime Quandalle",
-        contactEmail = "david@sandstorm.io",
-        pgpSignature = embed "meta/dwrensha-pgp-sig",
+        contactEmail = "x@xet7.org",
+        pgpSignature = embed "meta/wekanteam-pgp-sig",
       ),
 
       pgpKeyring = embed "meta/keyring",
@@ -87,13 +86,8 @@ const pkgdef :Spk.PackageDefinition = (
         ),
       ],
 
-      changeLog = (
-        defaultText = embed "CHANGELOG.md",
-        localizations = [
-          (locale = "fr", text = embed "meta/t9n-changelog/fr.md"),
-        ],
-      )
-    )
+      changeLog = (defaultText = embed "CHANGELOG.md"),
+    ),
   ),
 
   sourceMap = (
@@ -118,12 +112,14 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "participate",
           localizations = [
             (locale = "fr", text = "participer"),
+            (locale = "fi", text = "osallistu"),
           ],
         ),
         description = (
           defaultText = "allows participating in the board",
           localizations = [
             (locale = "fr", text = "permet de participer dans le tableau"),
+            (locale = "fi", text = "mahdollistaa taululle osallistumisen"),
           ],
         )
       ), (
@@ -132,12 +128,14 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "configure",
           localizations = [
             (locale = "fr", text = "configurer"),
+            (locale = "fi", text = "asetukset"),
           ],
         ),
         description = (
           defaultText = "allows configuring the board",
           localizations = [
             (locale = "fr", text = "permet de configurer le tableau"),
+            (locale = "fi", text = "mahdollistaa taulun asetusten määrittämisen"),
           ],
         )
       )],
@@ -147,6 +145,7 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "observer",
           localizations = [
             (locale = "fr", text = "observateur"),
+            (locale = "fi", text = "tarkkailija"),
           ],
         ),
         permissions = [false, false],
@@ -154,6 +153,7 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "can read",
           localizations = [
             (locale = "fr", text = "peut lire"),
+            (locale = "fi", text = "voi lukea"),
           ],
         )
       ), (
@@ -161,6 +161,7 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "member",
           localizations = [
             (locale = "fr", text = "membre"),
+            (locale = "fi", text = "jäsen"),
           ],
         ),
         permissions = [true, false],
@@ -168,6 +169,7 @@ const pkgdef :Spk.PackageDefinition = (
           defaultText = "can edit",
           localizations = [
             (locale = "fr", text = "peut éditer"),
+            (locale = "fi", text = "voi muokata"),
           ],
         ),
         default = true,
@@ -218,18 +220,54 @@ const pkgdef :Spk.PackageDefinition = (
         verbPhrase = (defaultText = "removed from card"),
       ), ],
     ),
-
+    apiPath = "/",
     saveIdentityCaps = true,
   ),
 );
 
 const myCommand :Spk.Manifest.Command = (
   # Here we define the command used to start up your server.
+  #argv = ["/sandstorm-http-bridge", "4000", "--", "node", "start.js"],
+  #argv = ["/sandstorm-http-bridge", "4000", "--", "node", "--stack-size=65500", "start.js"],
   argv = ["/sandstorm-http-bridge", "4000", "--", "node", "start.js"],
   environ = [
     # Note that this defines the *entire* environment seen by your app.
+    #---------------------------------------------------------------------
+    # https://github.com/wekan/wekan/issues/3585#issuecomment-1021522132
+    # Add more Node heap:
+    #export NODE_OPTIONS="--max_old_space_size=4096"
+    # Add more stack:
+    #bash -c "ulimit -s 65500; exec node --stack-size=65500 main.js"
+    #---------------------------------------------------------------------
+    (key = "NODE_OPTIONS", value = "--max_old_space_size=4096"),
     (key = "PATH", value = "/usr/local/bin:/usr/bin:/bin"),
-    (key = "SANDSTORM", value = "1"),
+    (key = "WRITABLE_PATH", value = "/var/wekan-uploads"),
+    (key = "RESULTS_PER_PAGE", value = ""),
+    (key = "WITH_API", value = "true"),
+    (key = "RICHER_CARD_COMMENT_EDITOR", value="false"),
+    (key = "CARD_OPENED_WEBHOOK_ENABLED", value="false"),
+    (key = "NOTIFICATION_TRAY_AFTER_READ_DAYS_BEFORE_REMOVE", value=""),
+    (key = "BIGEVENTS_PATTERN", value="NONE"),
+    (key = "MATOMO_ADDRESS", value=""),
+    (key = "MATOMO_SITE_ID", value=""),
+    (key = "MATOMO_DO_NOT_TRACK", value="true"),
+    (key = "MATOMO_WITH_USERNAME", value="false"),
+    (key = "BROWSER_POLICY_ENABLED", value="true"),
+    (key = "TRUSTED_URL", value=""),
+    (key = "WEBHOOKS_ATTRIBUTES", value=""),
+    (key = "OAUTH2_ENABLED", value="false"),
+    (key = "OAUTH2_CA_CERT", value=""),
+    (key = "OAUTH2_ADFS_ENABLED", value="false"),
+    (key = "OAUTH2_B2C_ENABLED", value="false"),
+    (key = "OAUTH2_CLIENT_ID", value="false"),
+    (key = "OAUTH2_SECRET", value=""),
+    (key = "OAUTH2_SERVER_URL", value=""),
+    (key = "OAUTH2_AUTH_ENDPOINT", value=""),
+    (key = "OAUTH2_USERINFO_ENDPOINT", value=""),
+    (key = "OAUTH2_TOKEN_ENDPOINT", value=""),
+    (key = "LDAP_ENABLE", value="false"),
+    (key = "PASSWORD_LOGIN_ENABLED", value="true"),
+    (key = "SANDSTORM", value="1"),
     (key = "METEOR_SETTINGS", value = "{\"public\": {\"sandstorm\": true}}")
   ]
 );

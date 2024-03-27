@@ -1,5 +1,9 @@
-import trelloMembersMapper from './trelloMembersMapper';
-import wekanMembersMapper from './wekanMembersMapper';
+import { ReactiveCache } from '/imports/reactiveCache';
+import { trelloGetMembersToMap } from './trelloMembersMapper';
+import { wekanGetMembersToMap } from './wekanMembersMapper';
+import { csvGetMembersToMap } from './csvMembersMapper';
+
+const Papa = require('papaparse');
 
 BlazeComponent.extendComponent({
   title() {
@@ -30,20 +34,30 @@ BlazeComponent.extendComponent({
     }
   },
 
-  importData(evt) {
+  importData(evt, dataSource) {
     evt.preventDefault();
-    const dataJson = this.find('.js-import-json').value;
-    try {
-      const dataObject = JSON.parse(dataJson);
-      this.setError('');
-      this.importedData.set(dataObject);
-      const membersToMap = this._prepareAdditionalData(dataObject);
-      // store members data and mapping in Session
-      // (we go deep and 2-way, so storing in data context is not a viable option)
+    const input = this.find('.js-import-json').value;
+    if (dataSource === 'csv') {
+      const csv = input.indexOf('\t') > 0 ? input.replace(/(\t)/g, ',') : input;
+      const ret = Papa.parse(csv);
+      if (ret && ret.data && ret.data.length) this.importedData.set(ret.data);
+      else throw new Meteor.Error('error-csv-schema');
+      const membersToMap = this._prepareAdditionalData(ret.data);
       this.membersToMap.set(membersToMap);
       this.nextStep();
-    } catch (e) {
-      this.setError('error-json-malformed');
+    } else {
+      try {
+        const dataObject = JSON.parse(input);
+        this.setError('');
+        this.importedData.set(dataObject);
+        const membersToMap = this._prepareAdditionalData(dataObject);
+        // store members data and mapping in Session
+        // (we go deep and 2-way, so storing in data context is not a viable option)
+        this.membersToMap.set(membersToMap);
+        this.nextStep();
+      } catch (e) {
+        this.setError('error-json-malformed');
+      }
     }
   },
 
@@ -56,7 +70,7 @@ BlazeComponent.extendComponent({
     const membersMapping = this.membersToMap.get();
     if (membersMapping) {
       const mappingById = {};
-      membersMapping.forEach((member) => {
+      membersMapping.forEach(member => {
         if (member.wekanId) {
           mappingById[member.id] = member.wekanId;
         }
@@ -64,7 +78,8 @@ BlazeComponent.extendComponent({
       additionalData.membersMapping = mappingById;
     }
     this.membersToMap.set([]);
-    Meteor.call('importBoard',
+    Meteor.call(
+      'importBoard',
       this.importedData.get(),
       additionalData,
       this.importSource,
@@ -73,10 +88,15 @@ BlazeComponent.extendComponent({
         if (err) {
           this.setError(err.error);
         } else {
+          let title = getSlug(this.importedData.get().title) || 'imported-board';
           Session.set('fromBoard', null);
-          Utils.goBoardId(res);
+          FlowRouter.go('board', {
+            id: res,
+            slug: title,
+          })
+          //Utils.goBoardId(res);
         }
-      }
+      },
     );
   },
 
@@ -84,12 +104,15 @@ BlazeComponent.extendComponent({
     const importSource = Session.get('importSource');
     let membersToMap;
     switch (importSource) {
-    case 'trello':
-      membersToMap = trelloMembersMapper.getMembersToMap(dataObject);
-      break;
-    case 'wekan':
-      membersToMap = wekanMembersMapper.getMembersToMap(dataObject);
-      break;
+      case 'trello':
+        membersToMap = trelloGetMembersToMap(dataObject);
+        break;
+      case 'wekan':
+        membersToMap = wekanGetMembersToMap(dataObject);
+        break;
+      case 'csv':
+        membersToMap = csvGetMembersToMap(dataObject);
+        break;
     }
     return membersToMap;
   },
@@ -108,22 +131,66 @@ BlazeComponent.extendComponent({
     return `import-board-instruction-${Session.get('importSource')}`;
   },
 
+  importPlaceHolder() {
+    const importSource = Session.get('importSource');
+    if (importSource === 'csv') {
+      return 'import-csv-placeholder';
+    } else {
+      return 'import-json-placeholder';
+    }
+  },
+
   events() {
-    return [{
-      submit(evt) {
-        return this.parentComponent().importData(evt);
+    return [
+      {
+        submit(evt) {
+          return this.parentComponent().importData(
+            evt,
+            Session.get('importSource'),
+          );
+        },
       },
-    }];
+    ];
   },
 }).register('importTextarea');
 
 BlazeComponent.extendComponent({
   onCreated() {
+    this.usersLoaded = new ReactiveVar(false);
+
     this.autorun(() => {
-      this.parentComponent().membersToMap.get().forEach(({ wekanId }) => {
-        if (wekanId) {
-          this.subscribe('user-miniprofile', wekanId);
-        }
+      const handle = this.subscribe(
+        'user-miniprofile',
+        this.members().map(member => {
+          return member.username;
+        }),
+      );
+      Tracker.nonreactive(() => {
+        Tracker.autorun(() => {
+          if (
+            handle.ready() &&
+            !this.usersLoaded.get() &&
+            this.members().length
+          ) {
+            this._refreshMembers(
+              this.members().map(member => {
+                if (!member.wekanId) {
+                  let user = ReactiveCache.getUser({ username: member.username });
+                  if (!user) {
+                    user = ReactiveCache.getUser({ importUsernames: member.username });
+                  }
+                  if (user) {
+                    // eslint-disable-next-line no-console
+                    // console.log('found username:', user.username);
+                    member.wekanId = user._id;
+                  }
+                }
+                return member;
+              }),
+            );
+          }
+          this.usersLoaded.set(handle.ready());
+        });
       });
     });
   },
@@ -149,23 +216,23 @@ BlazeComponent.extendComponent({
   _setPropertyForMember(property, value, memberId, unset = false) {
     const listOfMembers = this.members();
     let finder = null;
-    if(memberId) {
-      finder = (member) => member.id === memberId;
+    if (memberId) {
+      finder = member => member.id === memberId;
     } else {
-      finder = (member) => member.selected;
+      finder = member => member.selected;
     }
-    listOfMembers.forEach((member) => {
-      if(finder(member)) {
-        if(value !== null) {
+    listOfMembers.forEach(member => {
+      if (finder(member)) {
+        if (value !== null) {
           member[property] = value;
         } else {
           delete member[property];
         }
-        if(!unset) {
+        if (!unset) {
           // we shortcut if we don't care about unsetting the others
           return false;
         }
-      } else if(unset) {
+      } else if (unset) {
         delete member[property];
       }
       return true;
@@ -186,9 +253,9 @@ BlazeComponent.extendComponent({
     const allMembers = this.members();
     let finder = null;
     if (memberId) {
-      finder = (user) => user.id === memberId;
+      finder = user => user.id === memberId;
     } else {
-      finder = (user) => user.selected;
+      finder = user => user.selected;
     }
     return allMembers.find(finder);
   },
@@ -197,7 +264,7 @@ BlazeComponent.extendComponent({
     return this._setPropertyForMember('wekanId', wekanId, null);
   },
 
-  unmapMember(memberId){
+  unmapMember(memberId) {
     return this._setPropertyForMember('wekanId', null, memberId);
   },
 
@@ -206,22 +273,22 @@ BlazeComponent.extendComponent({
     this.parentComponent().nextStep();
   },
 
-  onMapMember(evt) {
-    const memberToMap = this.currentData();
-    if(memberToMap.wekan) {
-      // todo xxx ask for confirmation?
-      this.unmapMember(memberToMap.id);
-    } else {
-      this.setSelectedMember(memberToMap.id);
-      Popup.open('importMapMembersAdd')(evt);
-    }
-  },
-
   events() {
-    return [{
-      'submit': this.onSubmit,
-      'click .js-select-member': this.onMapMember,
-    }];
+    return [
+      {
+        submit: this.onSubmit,
+        'click .js-select-member'(evt) {
+          const memberToMap = this.currentData();
+          if (memberToMap.wekan) {
+            // todo xxx ask for confirmation?
+            this.unmapMember(memberToMap.id);
+          } else {
+            this.setSelectedMember(memberToMap.id);
+            Popup.open('importMapMembersAdd')(evt);
+          }
+        },
+      },
+    ];
   },
 }).register('importMapMembers');
 
@@ -230,14 +297,20 @@ BlazeComponent.extendComponent({
     this.find('.js-map-member input').focus();
   },
 
-  onSelectUser(){
-    Popup.getOpenerComponent().mapSelectedMember(this.currentData()._id);
+  onSelectUser() {
+    Popup.getOpenerComponent(5).mapSelectedMember(this.currentData().__originalId);
     Popup.back();
   },
 
   events() {
-    return [{
-      'click .js-select-import': this.onSelectUser,
-    }];
+    return [
+      {
+        'click .js-select-import': this.onSelectUser,
+      },
+    ];
   },
 }).register('importMapMembersAddPopup');
+
+Template.importMapMembersAddPopup.helpers({
+  searchIndex: () => UserSearchIndex,
+})
