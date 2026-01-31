@@ -1,10 +1,31 @@
 import { ReactiveCache } from '/imports/reactiveCache';
-import moment from 'moment/min/moment-with-locales';
 import { TAPi18n } from '/imports/i18n';
+import { CustomFields } from './customFields';
+import {
+  formatDateTime,
+  formatDate,
+  formatTime,
+  getISOWeek,
+  isValidDate,
+  isBefore,
+  isAfter,
+  isSame,
+  add,
+  subtract,
+  startOf,
+  endOf,
+  format,
+  parseDate,
+  now,
+  createDate,
+  fromNow,
+  calendar
+} from '/imports/lib/dateUtils';
+import getSlug from 'limax';
 
 const DateString = Match.Where(function(dateAsString) {
   check(dateAsString, String);
-  return moment(dateAsString, moment.ISO_8601).isValid();
+  return isValidDate(new Date(dateAsString));
 });
 
 export class TrelloCreator {
@@ -450,9 +471,9 @@ export class TrelloCreator {
             }
           };
           if (att.url) {
-            Attachment.load(att.url, opts, cb, true);
+            Attachments.load(att.url, opts, cb, true);
           } else if (att.file) {
-            Attachment.write(att.file, opts, cb, true);
+            Attachments.insert(att.file, opts, cb, true);
           }
         });
 
@@ -747,7 +768,7 @@ export class TrelloCreator {
     }
   }
 
-  create(board, currentBoardId) {
+  async create(board, currentBoardId) {
     // TODO : Make isSandstorm variable global
     const isSandstorm =
       Meteor.settings &&
@@ -755,7 +776,7 @@ export class TrelloCreator {
       Meteor.settings.public.sandstorm;
     if (isSandstorm && currentBoardId) {
       const currentBoard = ReactiveCache.getBoard(currentBoardId);
-      currentBoard.archive();
+      await currentBoard.archive();
     }
     this.parseActions(board.actions);
     const boardId = this.createBoardAndLabels(board);

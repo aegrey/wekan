@@ -8,20 +8,6 @@ textarea.js-edit-checklist-item {
   resize: none;
   height: 34px;
 }
-.card-details .text-show-at-minicard {
-  width: 350px;
-  text-align: left;
-}
-.minicard .text-show-at-minicard {
-  display: none;
-}
-.text-some-space {
-  width: 20px;
-}
-.text-hide-checked-items {
-  width: 400px;
-  text-align: left;
-}
 .delete-text,
 .js-delete-checklist-item,
 .js-convert-checklist-item-to-card {
@@ -40,8 +26,6 @@ textarea.js-edit-checklist-item {
   display: flex;
   justify-content: space-between;
 }
-
-
 .checklist-progress-bar-container {
   display: flex;
   flex-direction: row;
@@ -53,13 +37,18 @@ textarea.js-edit-checklist-item {
 .checklist-progress-bar-container .checklist-progress-bar {
   width: 80%;
   height: 10px;
+  background-color: #e0e0e0;
+  border-radius: 16px;
 }
 .checklist-progress-bar-container .checklist-progress-bar .checklist-progress {
-  color: #fff !important;
-  background-color: #2196f3 !important;
+  color: #fff;
+  background-color: #666;
   padding: 0.01em 16px;
   border-radius: 16px;
   height: 100%;
+}
+.checklist-title {
+  padding: 10px;
 }
 .checklist-title .checkbox {
   float: left;

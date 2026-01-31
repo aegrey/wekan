@@ -4,7 +4,7 @@ template(name="boardTriggers")
       div.trigger-text 
         | {{_'r-when-a-card'}}
       div.trigger-inline-button.js-open-card-title-popup 
-        i.fa.fa-filter
+        i.fa.fa-search
       div.trigger-text 
         | {{_'r-is'}}
       div.trigger-text 
@@ -32,7 +32,7 @@ template(name="boardTriggers")
       div.trigger-text 
         | {{_'r-when-a-card'}}
       div.trigger-inline-button.js-open-card-title-popup 
-        i.fa.fa-filter
+        i.fa.fa-search
       div.trigger-text 
         | {{_'r-is-moved'}}
       div.trigger-button.trigger-button-person.js-show-user-field
@@ -50,7 +50,7 @@ template(name="boardTriggers")
       div.trigger-text 
         | {{_'r-when-a-card'}}
       div.trigger-inline-button.js-open-card-title-popup 
-        i.fa.fa-filter
+        i.fa.fa-search
       div.trigger-text 
         | {{_'r-is'}}
       div.trigger-dropdown
@@ -80,7 +80,7 @@ template(name="boardTriggers")
       div.trigger-text 
         | {{_'r-when-a-card'}}
       div.trigger-inline-button.js-open-card-title-popup 
-        i.fa.fa-filter
+        i.fa.fa-search
       div.trigger-text 
         | {{_'r-is'}}
       div.trigger-dropdown
@@ -105,7 +105,7 @@ template(name="boardTriggers")
 template(name="boardCardTitlePopup")
     form
       label
-        | Card Title Filter
+        | {{_ 'boardCardTitlePopup-title'}}
         input.js-card-filter-name(type="text" value=title autofocus)
       input.js-card-filter-button.primary.wide(type="submit" value="{{_ 'set-filter'}}")
 

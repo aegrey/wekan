@@ -18,7 +18,7 @@ jobs:
 #    runs-on: ubuntu-latest
 #    steps:
 #    - name: checkout
-#      uses: actions/checkout@v4
+#      uses: actions/checkout@v6
 #
 #    - name: setup node
 #      uses: actions/setup-node@v1
@@ -42,7 +42,7 @@ jobs:
 #    needs: [lintcode]
 #    steps:
 #    - name: checkout
-#      uses: actions/checkout@v4
+#      uses: actions/checkout@v6
 #
 #    - name: setup node
 #      uses: actions/setup-node@v1
@@ -65,7 +65,7 @@ jobs:
 #    needs: [lintcode,lintstyle]
 #    steps:
 #    - name: checkout
-#      uses: actions/checkout@v4
+#      uses: actions/checkout@v6
 #
 #    - name: setup node
 #      uses: actions/setup-node@v1
@@ -90,12 +90,12 @@ jobs:
 
       # CHECKOUTS
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # CACHING
       - name: Install Meteor
         id: cache-meteor-install
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.meteor
           key: v1-meteor-${{ hashFiles('.meteor/versions') }}
@@ -104,7 +104,7 @@ jobs:
 
       - name: Cache NPM dependencies
         id: cache-meteor-npm
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.npm
           key: v1-npm-${{ hashFiles('package-lock.json') }}
@@ -113,7 +113,7 @@ jobs:
 
       - name: Cache Meteor build
         id: cache-meteor-build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             .meteor/local/resolver-result-cache.json
@@ -125,7 +125,7 @@ jobs:
             v1-meteor_build_cache-
 
       - name: Setup meteor
-        uses: meteorengineer/setup-meteor@v1
+        uses: meteorengineer/setup-meteor@v2
         with:
           meteor-release: '2.2'
 
@@ -136,7 +136,7 @@ jobs:
         run: sh ./test-wekan.sh -cv
 
       - name: Upload coverage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-folder
           path: .coverage/
@@ -147,10 +147,10 @@ jobs:
     needs: [tests]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download coverage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: coverage-folder
           path: .coverage/

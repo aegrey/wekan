@@ -1,12 +1,12 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 
 RulesHelper = {
-  executeRules(activity) {
+  async executeRules(activity) {
     const matchingRules = this.findMatchingRules(activity);
     for (let i = 0; i < matchingRules.length; i++) {
       const action = matchingRules[i].getAction();
       if (action !== undefined) {
-        this.performAction(activity, action);
+        await this.performAction(activity, action);
       }
     }
   },
@@ -57,7 +57,7 @@ RulesHelper = {
     });
     return matchingMap;
   },
-  performAction(activity, action) {
+  async performAction(activity, action) {
     const card = ReactiveCache.getCard(activity.cardId);
     const boardId = activity.boardId;
     if (
@@ -112,12 +112,12 @@ RulesHelper = {
         const minOrder = _.min(
           list.cardsUnfiltered(swimlaneId).map(c => c.sort),
         );
-        card.move(action.boardId, swimlaneId, listId, minOrder - 1);
+        await card.move(action.boardId, swimlaneId, listId, minOrder - 1);
       } else {
         const maxOrder = _.max(
           list.cardsUnfiltered(swimlaneId).map(c => c.sort),
         );
-        card.move(action.boardId, swimlaneId, listId, maxOrder + 1);
+        await card.move(action.boardId, swimlaneId, listId, maxOrder + 1);
       }
     }
     if (action.actionType === 'sendEmail') {
@@ -125,22 +125,31 @@ RulesHelper = {
       const text = action.emailMsg || '';
       const subject = action.emailSubject || '';
       try {
-/*
-        if (process.env.MAIL_SERVICE !== '') {
-          let transporter = nodemailer.createTransport({
-            service: process.env.MAIL_SERVICE,
-            auth: {
-              user: process.env.MAIL_SERVICE_USER,
-              pass: process.env.MAIL_SERVICE_PASSWORD
-            },
-          })
-          let info = transporter.sendMail({
+        // Try to detect the recipient's language preference if it's a Wekan user
+        // Otherwise, use the default language for the rule-triggered emails
+        let recipientUser = null;
+        let recipientLang = TAPi18n.getLanguage() || 'en';
+
+        // Check if recipient is a Wekan user to get their language
+        if (to && to.includes('@')) {
+          recipientUser = ReactiveCache.getUser({ 'emails.address': to.toLowerCase() });
+          if (recipientUser && typeof recipientUser.getLanguage === 'function') {
+            recipientLang = recipientUser.getLanguage();
+          }
+        }
+
+        // Use EmailLocalization if available
+        if (typeof EmailLocalization !== 'undefined') {
+          EmailLocalization.sendEmail({
             to,
             from: Accounts.emailTemplates.from,
             subject,
             text,
-          })
+            language: recipientLang,
+            userId: recipientUser ? recipientUser._id : null
+          });
         } else {
+          // Fallback to standard Email.send
           Email.send({
             to,
             from: Accounts.emailTemplates.from,
@@ -148,13 +157,6 @@ RulesHelper = {
             text,
           });
         }
-*/
-        Email.send({
-          to,
-          from: Accounts.emailTemplates.from,
-          subject,
-          text,
-        });
       } catch (e) {
         // eslint-disable-next-line no-console
         console.error(e);
@@ -245,13 +247,13 @@ RulesHelper = {
       }
     }
     if (action.actionType === 'archive') {
-      card.archive();
+      await card.archive();
     }
     if (action.actionType === 'unarchive') {
-      card.restore();
+      await card.restore();
     }
     if (action.actionType === 'setColor') {
-      card.setColor(action.selectedColor);
+      await card.setColor(action.selectedColor);
     }
     if (action.actionType === 'addLabel') {
       card.addLabel(action.labelId);
@@ -279,14 +281,14 @@ RulesHelper = {
         title: action.checklistName,
         cardId: card._id,
       });
-      checkList.checkAllItems();
+      await checkList.checkAllItems();
     }
     if (action.actionType === 'uncheckAll') {
       const checkList = ReactiveCache.getChecklist({
         title: action.checklistName,
         cardId: card._id,
       });
-      checkList.uncheckAllItems();
+      await checkList.uncheckAllItems();
     }
     if (action.actionType === 'checkItem') {
       const checkList = ReactiveCache.getChecklist({
@@ -297,7 +299,7 @@ RulesHelper = {
         title: action.checkItemName,
         checkListId: checkList._id,
       });
-      checkItem.check();
+      await checkItem.check();
     }
     if (action.actionType === 'uncheckItem') {
       const checkList = ReactiveCache.getChecklist({
@@ -308,7 +310,7 @@ RulesHelper = {
         title: action.checkItemName,
         checkListId: checkList._id,
       });
-      checkItem.uncheck();
+      await checkItem.uncheck();
     }
     if (action.actionType === 'addChecklist') {
       Checklists.insert({

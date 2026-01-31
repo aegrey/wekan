@@ -52,15 +52,20 @@ Meteor.startup(() => {
     }
   };
 
-  // Helper function. Will throw an error if the user does not have read only access to the given board
+  // Helper function. Will throw an error if the user is not active BoardAdmin or active Normal user of the board.
   Authentication.checkBoardAccess = function(userId, boardId) {
     Authentication.checkLoggedIn(userId);
-
     const board = ReactiveCache.getBoard(boardId);
-    const normalAccess =
-      board.permission === 'public' ||
-      board.members.some(e => e.userId === userId && e.isActive);
+    const normalAccess = board.members.some(e => e.userId === userId && e.isActive && !e.isNoComments && !e.isCommentOnly && !e.isWorker);
     Authentication.checkAdminOrCondition(userId, normalAccess);
+  };
+
+  // Helper function. Will throw an error if the user does not have write access to the board (excludes read-only users).
+  Authentication.checkBoardWriteAccess = function(userId, boardId) {
+    Authentication.checkLoggedIn(userId);
+    const board = ReactiveCache.getBoard(boardId);
+    const writeAccess = board.members.some(e => e.userId === userId && e.isActive && !e.isNoComments && !e.isCommentOnly && !e.isWorker && !e.isReadOnly && !e.isReadAssignedOnly);
+    Authentication.checkAdminOrCondition(userId, writeAccess);
   };
 
   if (Meteor.isServer) {
@@ -129,7 +134,7 @@ Meteor.startup(() => {
             validateUrl: process.env.CASE_VALIDATE_URL,
             casVersion: 3.0,
             attributes: {
-              debug: process.env.DEBUG,
+              debug: process.env.DEBUG === 'true',
             },
           },
         },

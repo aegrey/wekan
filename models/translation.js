@@ -98,6 +98,10 @@ if (Meteor.isServer) {
       check(text, String);
       check(translationText, String);
 
+      if (!ReactiveCache.getCurrentUser()?.isAdmin) {
+        throw new Meteor.Error('not-authorized');
+      }
+
       const nTexts = ReactiveCache.getTranslations({ language, text }).length;
       if (nTexts > 0) {
         throw new Meteor.Error('text-already-taken');
@@ -112,17 +116,31 @@ if (Meteor.isServer) {
     setTranslationText(translation, translationText) {
       check(translation, Object);
       check(translationText, String);
+
+      if (!ReactiveCache.getCurrentUser()?.isAdmin) {
+        throw new Meteor.Error('not-authorized');
+      }
+
       Translation.update(translation, {
         $set: { translationText: translationText },
       });
+    },
+    deleteTranslation(translationId) {
+      check(translationId, String);
+
+      if (!ReactiveCache.getCurrentUser()?.isAdmin) {
+        throw new Meteor.Error('not-authorized');
+      }
+
+      Translation.remove(translationId);
     },
   });
 }
 
 if (Meteor.isServer) {
   // Index for Organization User.
-  Meteor.startup(() => {
-    Translation._collection.createIndex({ modifiedAt: -1 });
+  Meteor.startup(async () => {
+    await Translation._collection.createIndexAsync({ modifiedAt: -1 });
   });
 }
 

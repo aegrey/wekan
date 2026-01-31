@@ -1,9 +1,30 @@
 import { ReactiveCache } from '/imports/reactiveCache';
-import moment from 'moment/min/moment-with-locales';
+import { CustomFields } from './customFields';
+import {
+  formatDateTime,
+  formatDate,
+  formatTime,
+  getISOWeek,
+  isValidDate,
+  isBefore,
+  isAfter,
+  isSame,
+  add,
+  subtract,
+  startOf,
+  endOf,
+  format,
+  parseDate,
+  now,
+  createDate,
+  fromNow,
+  calendar
+} from '/imports/lib/dateUtils';
+import getSlug from 'limax';
 
 const DateString = Match.Where(function(dateAsString) {
   check(dateAsString, String);
-  return moment(dateAsString, moment.ISO_8601).isValid();
+  return isValidDate(new Date(dateAsString));
 });
 
 export class WekanCreator {
@@ -57,6 +78,33 @@ export class WekanCreator {
 
     // maps a wekanCardId to an array of wekanAttachments
     this.attachments = {};
+
+    // default swimlane id created during import if necessary
+    this._defaultSwimlaneId = null;
+
+    // Normalize possible exported id fields: some exports may use `id` instead of `_id`.
+    // Ensure every item we rely on has an `_id` so mappings work consistently.
+    const normalizeIds = arr => {
+      if (!arr) return;
+      arr.forEach(item => {
+        if (item && item.id && !item._id) {
+          item._id = item.id;
+        }
+      });
+    };
+
+    normalizeIds(data.lists);
+    normalizeIds(data.cards);
+    normalizeIds(data.swimlanes);
+    normalizeIds(data.checklists);
+    normalizeIds(data.checklistItems);
+    normalizeIds(data.triggers);
+    normalizeIds(data.actions);
+    normalizeIds(data.labels);
+    normalizeIds(data.customFields);
+    normalizeIds(data.comments);
+    normalizeIds(data.activities);
+    normalizeIds(data.rules);
   }
 
   /**
@@ -329,7 +377,7 @@ export class WekanCreator {
         dateLastActivity: this._now(),
         description: card.description,
         listId: this.lists[card.listId],
-        swimlaneId: this.swimlanes[card.swimlaneId],
+        swimlaneId: this.swimlanes[card.swimlaneId] || this._defaultSwimlaneId,
         sort: card.sort,
         title: card.title,
         // we attribute the card to its creator if available
@@ -471,9 +519,9 @@ export class WekanCreator {
             }
           };
           if (att.url) {
-            Attachment.load(att.url, opts, cb, true);
+            Attachments.load(att.url, opts, cb, true);
           } else if (att.file) {
-            Attachment.write(att.file, opts, cb, true);
+            Attachments.insert(att.file, opts, cb, true);
           }
         });
       }
@@ -569,6 +617,25 @@ export class WekanCreator {
   }
 
   createSwimlanes(wekanSwimlanes, boardId) {
+    // If no swimlanes provided, create a default so cards still render
+    if (!wekanSwimlanes || wekanSwimlanes.length === 0) {
+      const swimlaneToCreate = {
+        archived: false,
+        boardId,
+        createdAt: this._now(),
+        title: 'Default',
+        sort: 0,
+      };
+      const created = Swimlanes.direct.insert(swimlaneToCreate);
+      Swimlanes.direct.update(created, {
+        $set: {
+          updatedAt: this._now(),
+        },
+      });
+      this._defaultSwimlaneId = created;
+      return;
+    }
+
     wekanSwimlanes.forEach((swimlane, swimlaneIndex) => {
       const swimlaneToCreate = {
         archived: swimlane.archived,
@@ -592,6 +659,9 @@ export class WekanCreator {
         },
       });
       this.swimlanes[swimlane._id] = swimlaneId;
+      if (!this._defaultSwimlaneId) {
+        this._defaultSwimlaneId = swimlaneId;
+      }
     });
   }
 
@@ -901,7 +971,7 @@ export class WekanCreator {
     // }
   }
 
-  create(board, currentBoardId) {
+  async create(board, currentBoardId) {
     // TODO : Make isSandstorm variable global
     const isSandstorm =
       Meteor.settings &&
@@ -909,7 +979,7 @@ export class WekanCreator {
       Meteor.settings.public.sandstorm;
     if (isSandstorm && currentBoardId) {
       const currentBoard = ReactiveCache.getBoard(currentBoardId);
-      currentBoard.archive();
+      await currentBoard.archive();
     }
     this.parseActivities(board);
     const boardId = this.createBoardAndLabels(board);

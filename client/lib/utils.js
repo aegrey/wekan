@@ -1,13 +1,15 @@
 import { ReactiveCache } from '/imports/reactiveCache';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 
 Utils = {
-  setBackgroundImage(url) {
+  async setBackgroundImage(url) {
     const currentBoard = Utils.getCurrentBoard();
     if (currentBoard.backgroundImageURL !== undefined) {
-      $(".board-wrapper,.board-wrapper .board-canvas").css({"background":"url(" + currentBoard.backgroundImageURL + ")","background-size":"cover"});
+      $(".board-wrapper").css({"background":"url(" + currentBoard.backgroundImageURL + ")","background-size":"cover"});
       $(".swimlane,.swimlane .list,.swimlane .list .list-body,.swimlane .list:first-child .list-body").css({"background-color":"transparent"});
-    } else if (currentBoard.color !== undefined) {
-      currentBoard.setColor(currentBoard.color);
+      $(".minicard").css({"opacity": "0.9"});
+    } else if (currentBoard["background-color"]) {
+      await currentBoard.setColor(currentBoard["background-color"]);
     }
   },
   /** returns the current board id
@@ -50,6 +52,182 @@ Utils = {
     const ret = ReactiveCache.getCard(cardId);
     return ret;
   },
+
+  // Zoom and mobile mode utilities
+  getZoomLevel() {
+    const user = ReactiveCache.getCurrentUser();
+    if (user && user.profile && user.profile.zoomLevel !== undefined) {
+      return user.profile.zoomLevel;
+    }
+    // For non-logged-in users, check localStorage
+    const stored = localStorage.getItem('wekan-zoom-level');
+    return stored ? parseFloat(stored) : 1.0;
+  },
+
+  setZoomLevel(level) {
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      // Update user profile
+      user.setZoomLevel(level);
+    } else {
+      // Store in localStorage for non-logged-in users
+      localStorage.setItem('wekan-zoom-level', level.toString());
+    }
+    Utils.applyZoomLevel(level);
+
+    // Trigger reactive updates for UI components
+    Session.set('wekan-zoom-level', level);
+  },
+
+  getMobileMode() {
+    // Check localStorage first - user's explicit preference takes priority
+    const stored = localStorage.getItem('wekan-mobile-mode');
+    if (stored !== null) {
+      return stored === 'true';
+    }
+    
+    // Then check user profile
+    const user = ReactiveCache.getCurrentUser();
+    if (user && user.profile && user.profile.mobileMode !== undefined) {
+      return user.profile.mobileMode;
+    }
+    
+    // Default to mobile mode for iPhone/iPod
+    const isIPhone = /iPhone|iPod/i.test(navigator.userAgent);
+    return isIPhone;
+  },
+
+  setMobileMode(enabled) {
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      // Update user profile
+      user.setMobileMode(enabled);
+    }
+    // Always store in localStorage for persistence across sessions
+    localStorage.setItem('wekan-mobile-mode', enabled.toString());
+    Utils.applyMobileMode(enabled);
+    // Trigger reactive updates for UI components
+    Session.set('wekan-mobile-mode', enabled);
+    // Re-apply zoom level to ensure proper rendering
+    const zoomLevel = Utils.getZoomLevel();
+    Utils.applyZoomLevel(zoomLevel);
+  },
+
+  getCardZoom() {
+    const user = ReactiveCache.getCurrentUser();
+    if (user && user.profile && user.profile.cardZoom !== undefined) {
+      return user.profile.cardZoom;
+    }
+    const stored = localStorage.getItem('wekan-card-zoom');
+    return stored ? parseFloat(stored) : 1.0;
+  },
+
+  setCardZoom(level) {
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      user.setCardZoom(level);
+    }
+    localStorage.setItem('wekan-card-zoom', level.toString());
+    Utils.applyCardZoom(level);
+    Session.set('wekan-card-zoom', level);
+  },
+
+  applyCardZoom(level) {
+    const cardDetails = document.querySelector('.card-details');
+    if (cardDetails) {
+      cardDetails.style.fontSize = `${level}em`;
+    }
+  },
+
+  applyZoomLevel(level) {
+    const boardWrapper = document.querySelector('.board-wrapper');
+    const body = document.body;
+    const isMobileMode = body.classList.contains('mobile-mode');
+
+    if (boardWrapper) {
+      if (isMobileMode) {
+        // On mobile mode, only apply zoom to text and icons, not the entire layout
+        // Remove any existing transform from board-wrapper
+        boardWrapper.style.transform = '';
+        boardWrapper.style.transformOrigin = '';
+
+        // Apply zoom to text and icon elements instead
+        const textElements = boardWrapper.querySelectorAll('h1, h2, h3, h4, h5, h6, p, span, div, .minicard, .list-header-name, .board-header-btn, .fa, .icon');
+        textElements.forEach(element => {
+          element.style.transform = `scale(${level})`;
+          element.style.transformOrigin = 'center';
+        });
+
+        // Reset board-canvas height
+        const boardCanvas = document.querySelector('.board-canvas');
+        if (boardCanvas) {
+          boardCanvas.style.height = '';
+        }
+      } else {
+        // Desktop mode: apply zoom to entire board-wrapper as before
+        boardWrapper.style.transform = `scale(${level})`;
+        boardWrapper.style.transformOrigin = 'top left';
+
+        // If zoom is 50% or lower, make board wrapper full width like content
+        if (level <= 0.5) {
+          boardWrapper.style.width = '100%';
+          boardWrapper.style.maxWidth = '100%';
+          boardWrapper.style.margin = '0';
+        } else {
+          // Reset to normal width for higher zoom levels
+          boardWrapper.style.width = '';
+          boardWrapper.style.maxWidth = '';
+          boardWrapper.style.margin = '';
+        }
+
+        // Adjust container height to prevent scroll issues
+        const boardCanvas = document.querySelector('.board-canvas');
+        if (boardCanvas) {
+          boardCanvas.style.height = `${100 / level}%`;
+
+          // For high zoom levels (200%+), enable both horizontal and vertical scrolling
+          if (level >= 2.0) {
+            boardCanvas.style.overflowX = 'auto';
+            boardCanvas.style.overflowY = 'auto';
+            // Ensure the content area can scroll both horizontally and vertically
+            const content = document.querySelector('#content');
+            if (content) {
+              content.style.overflowX = 'auto';
+              content.style.overflowY = 'auto';
+            }
+          } else {
+            // Reset overflow for normal zoom levels
+            boardCanvas.style.overflowX = '';
+            boardCanvas.style.overflowY = '';
+            const content = document.querySelector('#content');
+            if (content) {
+              content.style.overflowX = '';
+              content.style.overflowY = '';
+            }
+          }
+        }
+      }
+    }
+  },
+
+  applyMobileMode(enabled) {
+    const body = document.body;
+    if (enabled) {
+      body.classList.add('mobile-mode');
+      body.classList.remove('desktop-mode');
+    } else {
+      body.classList.add('desktop-mode');
+      body.classList.remove('mobile-mode');
+    }
+  },
+
+  initializeUserSettings() {
+    // Apply saved settings on page load
+    const zoomLevel = Utils.getZoomLevel();
+    const mobileMode = Utils.getMobileMode();
+    Utils.applyZoomLevel(zoomLevel);
+    Utils.applyMobileMode(mobileMode);
+  },
   getCurrentList() {
     const listId = this.getCurrentListId();
     let ret = null;
@@ -69,7 +247,20 @@ Utils = {
       currentUser &&
       currentUser.isBoardMember() &&
       !currentUser.isCommentOnly() &&
-      !currentUser.isWorker()
+      !currentUser.isWorker() &&
+      !currentUser.isReadOnly() &&
+      !currentUser.isReadAssignedOnly()
+    );
+    return ret;
+  },
+  canMoveCard() {
+    const currentUser = ReactiveCache.getCurrentUser();
+    const ret = (
+      currentUser &&
+      currentUser.isBoardMember() &&
+      !currentUser.isCommentOnly() &&
+      !currentUser.isReadOnly() &&
+      !currentUser.isReadAssignedOnly()
     );
     return ret;
   },
@@ -78,7 +269,9 @@ Utils = {
     const ret = (
       currentUser &&
       currentUser.isBoardMember() &&
-      !currentUser.isCommentOnly()
+      !currentUser.isCommentOnly() &&
+      !currentUser.isReadOnly() &&
+      !currentUser.isReadAssignedOnly()
     );
     return ret;
   },
@@ -90,9 +283,21 @@ Utils = {
     window.location.reload();
   },
   setBoardView(view) {
-    currentUser = ReactiveCache.getCurrentUser();
+    const currentUser = ReactiveCache.getCurrentUser();
+    
     if (currentUser) {
-      ReactiveCache.getCurrentUser().setBoardView(view);
+      // Update localStorage first
+      window.localStorage.setItem('boardView', view);
+      
+      // Update user profile via Meteor method
+      Meteor.call('setBoardView', view, (error) => {
+        if (error) {
+          console.error('[setBoardView] Update failed:', error);
+        } else {
+          // Reload to apply the view change
+          Utils.reload();
+        }
+      });
     } else if (view === 'board-view-swimlanes') {
       window.localStorage.setItem('boardView', 'board-view-swimlanes'); //true
       Utils.reload();
@@ -101,6 +306,9 @@ Utils = {
       Utils.reload();
     } else if (view === 'board-view-cal') {
       window.localStorage.setItem('boardView', 'board-view-cal'); //true
+      Utils.reload();
+    } else if (view === 'board-view-gantt') {
+      window.localStorage.setItem('boardView', 'board-view-gantt'); //true
       Utils.reload();
     } else {
       window.localStorage.setItem('boardView', 'board-view-swimlanes'); //true
@@ -127,10 +335,91 @@ Utils = {
       return 'board-view-lists';
     } else if (window.localStorage.getItem('boardView') === 'board-view-cal') {
       return 'board-view-cal';
+    } else if (window.localStorage.getItem('boardView') === 'board-view-gantt') {
+      return 'board-view-gantt';
     } else {
       window.localStorage.setItem('boardView', 'board-view-swimlanes'); //true
       Utils.reload();
       return 'board-view-swimlanes';
+    }
+  },
+
+  getListCollapseState(list) {
+    if (!list) return false;
+    const key = `collapsedList-${list._id}`;
+    const sessionVal = Session.get(key);
+    if (typeof sessionVal === 'boolean') {
+      return sessionVal;
+    }
+
+    const user = ReactiveCache.getCurrentUser();
+    let stored = null;
+    if (user && user.getCollapsedListFromStorage) {
+      stored = user.getCollapsedListFromStorage(list.boardId, list._id);
+    } else if (Users.getPublicCollapsedList) {
+      stored = Users.getPublicCollapsedList(list.boardId, list._id);
+    }
+
+    if (typeof stored === 'boolean') {
+      Session.setDefault(key, stored);
+      return stored;
+    }
+
+    const fallback = typeof list.collapsed === 'boolean' ? list.collapsed : false;
+    Session.setDefault(key, fallback);
+    return fallback;
+  },
+
+  setListCollapseState(list, collapsed) {
+    if (!list) return;
+    const key = `collapsedList-${list._id}`;
+    Session.set(key, !!collapsed);
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      Meteor.call('setListCollapsedState', list.boardId, list._id, !!collapsed);
+    } else if (Users.setPublicCollapsedList) {
+      Users.setPublicCollapsedList(list.boardId, list._id, !!collapsed);
+    }
+  },
+
+  getSwimlaneCollapseState(swimlane) {
+    if (!swimlane) return false;
+    const key = `collapsedSwimlane-${swimlane._id}`;
+    const sessionVal = Session.get(key);
+    if (typeof sessionVal === 'boolean') {
+      return sessionVal;
+    }
+
+    const user = ReactiveCache.getCurrentUser();
+    let stored = null;
+    if (user && user.getCollapsedSwimlaneFromStorage) {
+      stored = user.getCollapsedSwimlaneFromStorage(
+        swimlane.boardId,
+        swimlane._id,
+      );
+    } else if (Users.getPublicCollapsedSwimlane) {
+      stored = Users.getPublicCollapsedSwimlane(swimlane.boardId, swimlane._id);
+    }
+
+    if (typeof stored === 'boolean') {
+      Session.setDefault(key, stored);
+      return stored;
+    }
+
+    const fallback = typeof swimlane.collapsed === 'boolean' ? swimlane.collapsed : false;
+    Session.setDefault(key, fallback);
+    return fallback;
+  },
+
+  setSwimlaneCollapseState(swimlane, collapsed) {
+    if (!swimlane) return;
+    const key = `collapsedSwimlane-${swimlane._id}`;
+    Session.set(key, !!collapsed);
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      Meteor.call('setSwimlaneCollapsedState', swimlane.boardId, swimlane._id, !!collapsed);
+    } else if (Users.setPublicCollapsedSwimlane) {
+      Users.setPublicCollapsedSwimlane(swimlane.boardId, swimlane._id, !!collapsed);
     }
   },
 
@@ -286,22 +575,60 @@ Utils = {
   },
 
   windowResizeDep: new Tracker.Dependency(),
-
   // in fact, what we really care is screen size
   // large mobile device like iPad or android Pad has a big screen, it should also behave like a desktop
   // in a small window (even on desktop), Wekan run in compact mode.
   // we can easily debug with a small window of desktop browser. :-)
   isMiniScreen() {
-    // OLD WINDOW WIDTH DETECTION:
     this.windowResizeDep.depend();
-    return $(window).width() <= 800;
+    // Also depend on mobile mode changes to make this reactive
+    Session.get('wekan-mobile-mode');
+    
+    // Show mobile view when:
+    // 1. Screen width is 800px or less (matches CSS media queries)
+    // 2. Mobile phones in portrait mode
+    // 3. iPad in very small screens (≤ 600px)
+    // 4. All iPhone models by default (including largest models), but respect user preference
+    const isSmallScreen = window.innerWidth <= 800;
+    const isVerySmallScreen = window.innerWidth <= 600;
+    const isPortrait = window.innerWidth < window.innerHeight || window.matchMedia("(orientation: portrait)").matches;
+    const isMobilePhone = /Mobile|Android|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) && !/iPad/i.test(navigator.userAgent);
+    const isIPhone = /iPhone|iPod/i.test(navigator.userAgent);
+    const isIPad = /iPad/i.test(navigator.userAgent);
+    const isUbuntuTouch = /Ubuntu/i.test(navigator.userAgent);
+
+    // Check if user has explicitly set mobile mode preference
+    const userMobileMode = this.getMobileMode();
+    
+    // For iPhone: default to mobile view, but respect user's mobile mode toggle preference
+    // This ensures all iPhone models (including iPhone 15 Pro Max, 14 Pro Max, etc.) start with mobile view
+    // but users can still switch to desktop mode if they prefer
+    if (isIPhone) {
+      // If user has explicitly set a preference, respect it
+      if (userMobileMode !== null && userMobileMode !== undefined) {
+        return userMobileMode;
+      }
+      // Otherwise, default to mobile view for iPhones
+      return true;
+    } else if (isMobilePhone) {
+      return isPortrait; // Other mobile phones: portrait = mobile, landscape = desktop
+    } else if (isIPad) {
+      return isVerySmallScreen; // iPad: only very small screens get mobile view
+    } else if (isUbuntuTouch) {
+      // Ubuntu Touch: smartphones (≤ 600px) behave like mobile phones, tablets (> 600px) like iPad
+      if (isVerySmallScreen) {
+        return isPortrait; // Ubuntu Touch smartphone: portrait = mobile, landscape = desktop
+      } else {
+        return isVerySmallScreen; // Ubuntu Touch tablet: only very small screens get mobile view
+      }
+    } else {
+      return isSmallScreen; // Desktop: based on 800px screen width
+    }
   },
 
   isTouchScreen() {
-
     // NEW TOUCH DEVICE DETECTION:
     // https://developer.mozilla.org/en-US/docs/Web/HTTP/Browser_detection_using_the_user_agent
-
     var hasTouchScreen = false;
     if ("maxTouchPoints" in navigator) {
       hasTouchScreen = navigator.maxTouchPoints > 0;
@@ -327,21 +654,18 @@ Utils = {
 
   // returns if desktop drag handles are enabled
   isShowDesktopDragHandles() {
-    //const currentUser = ReactiveCache.getCurrentUser();
-    //if (currentUser) {
-    //  return (currentUser.profile || {}).showDesktopDragHandles;
-    //} else if (window.localStorage.getItem('showDesktopDragHandles')) {
-    if (window.localStorage.getItem('showDesktopDragHandles')) {
-      return true;
+    const currentUser = Meteor.user();
+    if (currentUser) {
+      return currentUser.hasShowDesktopDragHandles();
     } else {
-      return false;
+      // For non-logged-in users, check localStorage
+      return window.localStorage.getItem('showDesktopDragHandles') === 'true';
     }
   },
 
   // returns if mini screen or desktop drag handles
   isTouchScreenOrShowDesktopDragHandles() {
-    //return this.isTouchScreen() || this.isShowDesktopDragHandles();
-    return this.isShowDesktopDragHandles();
+    return Utils.isTouchScreen() || Utils.isShowDesktopDragHandles();
   },
 
   calculateIndexData(prevData, nextData, nItems = 1) {
@@ -434,9 +758,9 @@ Utils = {
   setCustomUI(data) {
     const currentBoard = Utils.getCurrentBoard();
     if (currentBoard) {
-      DocHead.setTitle(`${currentBoard.title} - ${data.productName}`);
+      document.title = `${currentBoard.title} - ${data.productName}`;
     } else {
-      DocHead.setTitle(`${data.productName}`);
+      document.title = `${data.productName}`;
     }
   },
 

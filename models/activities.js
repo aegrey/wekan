@@ -74,29 +74,29 @@ Activities.before.insert((userId, doc) => {
   doc.modifiedAt = doc.createdAt;
 });
 
-Activities.after.insert((userId, doc) => {
-  const activity = Activities._transform(doc);
-  RulesHelper.executeRules(activity);
-});
-
 if (Meteor.isServer) {
+  Activities.after.insert((userId, doc) => {
+    const activity = Activities._transform(doc);
+    RulesHelper.executeRules(activity);
+  });
+
   // For efficiency create indexes on the date of creation, and on the date of
   // creation in conjunction with the card or board id, as corresponding views
   // are largely used in the App. See #524.
-  Meteor.startup(() => {
-    Activities._collection.createIndex({ createdAt: -1 });
-    Activities._collection.createIndex({ modifiedAt: -1 });
-    Activities._collection.createIndex({ cardId: 1, createdAt: -1 });
-    Activities._collection.createIndex({ boardId: 1, createdAt: -1 });
-    Activities._collection.createIndex(
+  Meteor.startup(async () => {
+    await Activities._collection.createIndexAsync({ createdAt: -1 });
+    await Activities._collection.createIndexAsync({ modifiedAt: -1 });
+    await Activities._collection.createIndexAsync({ cardId: 1, createdAt: -1 });
+    await Activities._collection.createIndexAsync({ boardId: 1, createdAt: -1 });
+    await Activities._collection.createIndexAsync(
       { commentId: 1 },
       { partialFilterExpression: { commentId: { $exists: true } } },
     );
-    Activities._collection.createIndex(
+    await Activities._collection.createIndexAsync(
       { attachmentId: 1 },
       { partialFilterExpression: { attachmentId: { $exists: true } } },
     );
-    Activities._collection.createIndex(
+    await Activities._collection.createIndexAsync(
       { customFieldId: 1 },
       { partialFilterExpression: { customFieldId: { $exists: true } } },
     );
@@ -200,9 +200,10 @@ if (Meteor.isServer) {
     if (activity.commentId) {
       const comment = activity.comment();
       params.comment = comment.text;
+      let hasMentions = false; // Track if comment has @mentions
       if (board) {
         const comment = params.comment;
-        const knownUsers = board.members.map(member => {
+        const knownUsers = board.members.map((member) => {
           const u = ReactiveCache.getUser(member.userId);
           if (u) {
             member.username = u.username;
@@ -210,27 +211,73 @@ if (Meteor.isServer) {
           }
           return member;
         });
-        const mentionRegex = /\B@(?:(?:"([\w.\s-]*)")|([\w.-]+))/gi; // including space in username
+        // Match @mentions including usernames with @ symbols (like email addresses)
+        // Pattern matches: @username, @user@example.com, @"quoted username"
+        const mentionRegex = /\B@(?:(?:"([\w.\s-]*)")|([\w.@-]+))/gi;
         let currentMention;
+
         while ((currentMention = mentionRegex.exec(comment)) !== null) {
           /*eslint no-unused-vars: ["error", { "varsIgnorePattern": "[iI]gnored" }]*/
           const [ignored, quoteduser, simple] = currentMention;
           const username = quoteduser || simple;
-          if (username === params.user) {
-            // ignore commenter mention himself?
-            continue;
-          }
+          // Removed the check that prevented self-mentions from creating notifications
+          // Users can now mention themselves in comments to create notifications
 
           if (activity.boardId && username === 'board_members') {
             // mentions all board members
-            const knownUids = knownUsers.map(u => u.userId);
-            watchers = _.union(watchers, [...knownUids]);
+            const validUserIds = knownUsers
+              .map((u) => u.userId)
+              .filter((userId) => {
+                const user = ReactiveCache.getUser(userId);
+                return user && user._id;
+              });
+            watchers = _.union(watchers, validUserIds);
             title = 'act-atUserComment';
+            hasMentions = true;
+          } else if (activity.boardId && username === 'board_assignees') {
+            // mentions all assignees of all cards on the board
+            const allCards = ReactiveCache.getCards({ boardId: activity.boardId });
+            const assigneeIds = [];
+            allCards.forEach((card) => {
+              if (card.assignees && card.assignees.length > 0) {
+                card.assignees.forEach((assigneeId) => {
+                  // Only add if the user exists and is a board member
+                  const user = ReactiveCache.getUser(assigneeId);
+                  if (user && _.findWhere(knownUsers, { userId: assigneeId })) {
+                    assigneeIds.push(assigneeId);
+                  }
+                });
+              }
+            });
+            watchers = _.union(watchers, assigneeIds);
+            title = 'act-atUserComment';
+            hasMentions = true;
           } else if (activity.cardId && username === 'card_members') {
             // mentions all card members if assigned
             const card = activity.card();
-            watchers = _.union(watchers, [...card.members]);
+            if (card && card.members && card.members.length > 0) {
+              // Filter to only valid users who are board members
+              const validMembers = card.members.filter((memberId) => {
+                const user = ReactiveCache.getUser(memberId);
+                return user && user._id && _.findWhere(knownUsers, { userId: memberId });
+              });
+              watchers = _.union(watchers, validMembers);
+            }
             title = 'act-atUserComment';
+            hasMentions = true;
+          } else if (activity.cardId && username === 'card_assignees') {
+            // mentions all assignees of the current card
+            const card = activity.card();
+            if (card && card.assignees && card.assignees.length > 0) {
+              // Filter to only valid users who are board members
+              const validAssignees = card.assignees.filter((assigneeId) => {
+                const user = ReactiveCache.getUser(assigneeId);
+                return user && user._id && _.findWhere(knownUsers, { userId: assigneeId });
+              });
+              watchers = _.union(watchers, validAssignees);
+            }
+            title = 'act-atUserComment';
+            hasMentions = true;
           } else {
             const atUser = _.findWhere(knownUsers, { username });
             if (!atUser) {
@@ -242,11 +289,12 @@ if (Meteor.isServer) {
             params.atEmails = atUser.emails;
             title = 'act-atUserComment';
             watchers = _.union(watchers, [uid]);
+            hasMentions = true;
           }
-
         }
       }
       params.commentId = comment._id;
+      params.hasMentions = hasMentions; // Store for later use
     }
     if (activity.attachmentId) {
       params.attachment = activity.attachmentName;
@@ -300,7 +348,7 @@ if (Meteor.isServer) {
       // due time reminder, if it doesn't have old value, it's a brand new set, need some differentiation
       title = activity.timeOldValue ? 'act-withDue' : 'act-newDue';
     }
-    ['timeValue', 'timeOldValue'].forEach(key => {
+    ['timeValue', 'timeOldValue'].forEach((key) => {
       // copy time related keys & values to params
       const value = activity[key];
       if (value) params[key] = value;
@@ -313,7 +361,7 @@ if (Meteor.isServer) {
           if (new RegExp(BIGEVENTS).exec(atype)) {
             watchers = _.union(
               watchers,
-              board.activeMembers().map(member => member.userId),
+              board.activeMembers().map((member) => member.userId),
             ); // notify all active members for important events
           }
         } catch (e) {
@@ -329,15 +377,23 @@ if (Meteor.isServer) {
         _.where(board.watchers, { level: 'tracking' }),
         'userId',
       );
-      watchers = _.union(
-        watchers,
-        watchingUsers,
-        _.intersection(participants, trackingUsers),
-      );
+      // Only add board watchers if there were no @mentions in the comment
+      // When users are explicitly @mentioned, only notify those users
+      if (!params.hasMentions) {
+        watchers = _.union(
+          watchers,
+          watchingUsers,
+          _.intersection(participants, trackingUsers),
+        );
+      }
     }
-    Notifications.getUsers(watchers).forEach(user => {
-      // don't notify a user of their own behavior
-      if (user._id !== userId) {
+    Notifications.getUsers(watchers).forEach((user) => {
+      // Skip if user is undefined or doesn't have an _id (e.g., deleted user or invalid ID)
+      if (!user || !user._id) return;
+      
+      // Don't notify a user of their own behavior, EXCEPT for self-mentions
+      const isSelfMention = (user._id === userId && title === 'act-atUserComment');
+      if (user._id !== userId || isSelfMention) {
         Notifications.notify(user, title, description, params);
       }
     });
@@ -350,7 +406,7 @@ if (Meteor.isServer) {
     });
     if (integrations.length > 0) {
       params.watchers = watchers;
-      integrations.forEach(integration => {
+      integrations.forEach((integration) => {
         Meteor.call(
           'outgoingWebhooks',
           integration,

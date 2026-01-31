@@ -14,13 +14,13 @@ if [ $# -ne 2 ]
 fi
 
 # 2) Go to website directory
-cd ~/repos/w/wekan.github.io
+cd ~/repos/w/wekan.fi
 
 # 3) Get latest changes to website
 git pull
 
 # 4) Change version number in website
-sed -i "s|>v$1<\/span>|>v$2<\/span>|g" index.html
+sed -i "s|>v$1<\/span>|>v$2<\/span>|g" install/index.html
 
 # 5) Change version number in API docs index page
 cd api
@@ -39,7 +39,7 @@ cp ~/repos/wekan/public/api/* .
 mv wekan.html index.html
 
 # 10) Go to docs repo
-cd ~/repos/w/wekan.github.io
+cd ~/repos/w/wekan.fi
 
 # 11) Commit all changes to git and push website changes live
 git add --all

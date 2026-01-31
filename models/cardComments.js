@@ -2,6 +2,13 @@ import { ReactiveCache } from '/imports/reactiveCache';
 import escapeForRegex from 'escape-string-regexp';
 import DOMPurify from 'dompurify';
 
+// Server-side text sanitization function
+function sanitizeText(text) {
+  if (typeof text !== 'string') return text;
+  // Strip HTML tags and return only text content
+  return text.replace(/<[^>]*>/g, '');
+}
+
 CardComments = new Mongo.Collection('card_comments');
 
 /**
@@ -75,7 +82,8 @@ CardComments.attachSchema(
 
 CardComments.allow({
   insert(userId, doc) {
-    return allowIsBoardMember(userId, ReactiveCache.getBoard(doc.boardId));
+    // ReadOnly users cannot add comments. Only members who can comment are allowed.
+    return allowIsBoardMemberCommentOnly(userId, ReactiveCache.getBoard(doc.boardId));
   },
   update(userId, doc) {
     return userId === doc.userId || allowIsBoardAdmin(userId, ReactiveCache.getBoard(doc.boardId));
@@ -103,7 +111,7 @@ CardComments.helpers({
   },
 
   toggleReaction(reactionCodepoint) {
-    if (reactionCodepoint !== DOMPurify.sanitize(reactionCodepoint)) {
+    if (reactionCodepoint !== sanitizeText(reactionCodepoint)) {
       return false;
     } else {
 
@@ -184,9 +192,9 @@ CardComments.textSearch = (userId, textArray) => {
 if (Meteor.isServer) {
   // Comments are often fetched within a card, so we create an index to make these
   // queries more efficient.
-  Meteor.startup(() => {
-    CardComments._collection.createIndex({ modifiedAt: -1 });
-    CardComments._collection.createIndex({ cardId: 1, createdAt: -1 });
+  Meteor.startup(async () => {
+    await CardComments._collection.createIndexAsync({ modifiedAt: -1 });
+    await CardComments._collection.createIndexAsync({ cardId: 1, createdAt: -1 });
   });
 
   CardComments.after.insert((userId, doc) => {
@@ -306,8 +314,7 @@ if (Meteor.isServer) {
    *
    * @param {string} boardId the board ID of the card
    * @param {string} cardId the ID of the card
-   * @param {string} authorId the user who 'posted' the comment
-   * @param {string} text the content of the comment
+   * @param {string} comment the content of the comment
    * @return_type {_id: string}
    */
   JsonRoutes.add(
@@ -319,7 +326,7 @@ if (Meteor.isServer) {
         const paramCardId = req.params.cardId;
         Authentication.checkBoardAccess(req.userId, paramBoardId);
         const id = CardComments.direct.insert({
-          userId: req.body.authorId,
+          userId: req.userId,
           text: req.body.comment,
           cardId: paramCardId,
           boardId: paramBoardId,
@@ -337,7 +344,7 @@ if (Meteor.isServer) {
           cardId: paramCardId,
           boardId: paramBoardId,
         });
-        commentCreation(req.body.authorId, cardComment);
+        commentCreation(req.userId, cardComment);
       } catch (error) {
         JsonRoutes.sendResult(res, {
           code: 200,

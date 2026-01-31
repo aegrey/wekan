@@ -1,7 +1,26 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { Blaze } from 'meteor/blaze';
 import { Session } from 'meteor/session';
-import moment from 'moment/min/moment-with-locales';
+import { 
+  formatDateTime, 
+  formatDate, 
+  formatTime, 
+  getISOWeek, 
+  isValidDate, 
+  isBefore, 
+  isAfter, 
+  isSame, 
+  add, 
+  subtract, 
+  startOf, 
+  endOf, 
+  format, 
+  parseDate, 
+  now, 
+  createDate, 
+  fromNow, 
+  calendar 
+} from '/imports/lib/dateUtils';
 
 Blaze.registerHelper('currentBoard', () => {
   const ret = Utils.getCurrentBoard();
@@ -46,14 +65,22 @@ Blaze.registerHelper('isTouchScreenOrShowDesktopDragHandles', () =>
 
 Blaze.registerHelper('moment', (...args) => {
   args.pop(); // hash
-  const [date, format] = args;
-  return moment(date).format(format);
+  const [date, formatStr] = args;
+  return format(new Date(date), formatStr ?? 'LLLL');
 });
 
 Blaze.registerHelper('canModifyCard', () =>
   Utils.canModifyCard(),
 );
 
+Blaze.registerHelper('canMoveCard', () =>
+  Utils.canMoveCard(),
+);
+
 Blaze.registerHelper('canModifyBoard', () =>
   Utils.canModifyBoard(),
 );
+
+Blaze.registerHelper('add', (a, b) => a + b);
+
+Blaze.registerHelper('increment', (n) => (n || 0) + 1);

@@ -70,13 +70,16 @@ ChecklistItems.attachSchema(
 
 ChecklistItems.allow({
   insert(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot create checklist items
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   update(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot edit checklist items
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   remove(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot delete checklist items
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   fetch: ['userId', 'cardId'],
 });
@@ -87,29 +90,24 @@ ChecklistItems.before.insert((userId, doc) => {
   }
 });
 
-// Mutations
-ChecklistItems.mutations({
-  setTitle(title) {
-    return { $set: { title } };
+ChecklistItems.helpers({
+  async setTitle(title) {
+    return await ChecklistItems.updateAsync(this._id, { $set: { title } });
   },
-  check() {
-    return { $set: { isFinished: true } };
+  async check() {
+    return await ChecklistItems.updateAsync(this._id, { $set: { isFinished: true } });
   },
-  uncheck() {
-    return { $set: { isFinished: false } };
+  async uncheck() {
+    return await ChecklistItems.updateAsync(this._id, { $set: { isFinished: false } });
   },
-  toggleItem() {
-    return { $set: { isFinished: !this.isFinished } };
+  async toggleItem() {
+    return await ChecklistItems.updateAsync(this._id, { $set: { isFinished: !this.isFinished } });
   },
-  move(checklistId, sortIndex) {
+  async move(checklistId, sortIndex) {
     const cardId = ReactiveCache.getChecklist(checklistId).cardId;
-    const mutatedFields = {
-      cardId,
-      checklistId,
-      sort: sortIndex,
-    };
-
-    return { $set: mutatedFields };
+    return await ChecklistItems.updateAsync(this._id, {
+      $set: { cardId, checklistId, sort: sortIndex },
+    });
   },
 });
 
@@ -214,10 +212,10 @@ function publishChekListUncompleted(userId, doc) {
 
 // Activities
 if (Meteor.isServer) {
-  Meteor.startup(() => {
-    ChecklistItems._collection.createIndex({ modifiedAt: -1 });
-    ChecklistItems._collection.createIndex({ checklistId: 1 });
-    ChecklistItems._collection.createIndex({ cardId: 1 });
+  Meteor.startup(async () => {
+    await ChecklistItems._collection.createIndexAsync({ modifiedAt: -1 });
+    await ChecklistItems._collection.createIndexAsync({ checklistId: 1 });
+    await ChecklistItems._collection.createIndexAsync({ cardId: 1 });
   });
 
   ChecklistItems.after.update((userId, doc, fieldNames) => {
@@ -268,17 +266,26 @@ if (Meteor.isServer) {
     '/api/boards/:boardId/cards/:cardId/checklists/:checklistId/items/:itemId',
     function(req, res) {
       const paramBoardId = req.params.boardId;
+      const paramCardId = req.params.cardId;
+      const paramChecklistId = req.params.checklistId;
       const paramItemId = req.params.itemId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
       const checklistItem = ReactiveCache.getChecklistItem(paramItemId);
-      if (checklistItem) {
-        JsonRoutes.sendResult(res, {
-          code: 200,
-          data: checklistItem,
-        });
+      if (checklistItem && checklistItem.cardId === paramCardId && checklistItem.checklistId === paramChecklistId) {
+        const card = ReactiveCache.getCard(checklistItem.cardId);
+        if (card && card.boardId === paramBoardId) {
+          JsonRoutes.sendResult(res, {
+            code: 200,
+            data: checklistItem,
+          });
+        } else {
+          JsonRoutes.sendResult(res, {
+            code: 404,
+          });
+        }
       } else {
         JsonRoutes.sendResult(res, {
-          code: 500,
+          code: 404,
         });
       }
     },
@@ -308,19 +315,26 @@ if (Meteor.isServer) {
         cardId: paramCardId,
       });
       if (checklist) {
-        const id = ChecklistItems.insert({
-          cardId: paramCardId,
-          checklistId: paramChecklistId,
-          title: req.body.title,
-          isFinished: false,
-          sort: 0,
-        });
-        JsonRoutes.sendResult(res, {
-          code: 200,
-          data: {
-            _id: id,
-          },
-        });
+        const card = ReactiveCache.getCard(paramCardId);
+        if (card && card.boardId === paramBoardId) {
+          const id = ChecklistItems.insert({
+            cardId: paramCardId,
+            checklistId: paramChecklistId,
+            title: req.body.title,
+            isFinished: false,
+            sort: 0,
+          });
+          JsonRoutes.sendResult(res, {
+            code: 200,
+            data: {
+              _id: id,
+            },
+          });
+        } else {
+          JsonRoutes.sendResult(res, {
+            code: 404,
+          });
+        }
       } else {
         JsonRoutes.sendResult(res, {
           code: 404,
@@ -347,8 +361,25 @@ if (Meteor.isServer) {
     '/api/boards/:boardId/cards/:cardId/checklists/:checklistId/items/:itemId',
     function(req, res) {
       const paramBoardId = req.params.boardId;
+      const paramCardId = req.params.cardId;
+      const paramChecklistId = req.params.checklistId;
       const paramItemId = req.params.itemId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
+
+      const checklistItem = ReactiveCache.getChecklistItem(paramItemId);
+      if (!checklistItem || checklistItem.cardId !== paramCardId || checklistItem.checklistId !== paramChecklistId) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+        });
+        return;
+      }
+      const card = ReactiveCache.getCard(checklistItem.cardId);
+      if (!card || card.boardId !== paramBoardId) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+        });
+        return;
+      }
 
       function isTrue(data) {
         try {
@@ -398,8 +429,26 @@ if (Meteor.isServer) {
     '/api/boards/:boardId/cards/:cardId/checklists/:checklistId/items/:itemId',
     function(req, res) {
       const paramBoardId = req.params.boardId;
+      const paramCardId = req.params.cardId;
+      const paramChecklistId = req.params.checklistId;
       const paramItemId = req.params.itemId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
+
+      const checklistItem = ReactiveCache.getChecklistItem(paramItemId);
+      if (!checklistItem || checklistItem.cardId !== paramCardId || checklistItem.checklistId !== paramChecklistId) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+        });
+        return;
+      }
+      const card = ReactiveCache.getCard(checklistItem.cardId);
+      if (!card || card.boardId !== paramBoardId) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+        });
+        return;
+      }
+
       ChecklistItems.direct.remove({ _id: paramItemId });
       JsonRoutes.sendResult(res, {
         code: 200,

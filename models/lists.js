@@ -1,5 +1,6 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { ALLOWED_COLORS } from '/config/const';
+import PositionHistory from './positionHistory';
 
 Lists = new Mongo.Collection('lists');
 
@@ -50,9 +51,10 @@ Lists.attachSchema(
     },
     swimlaneId: {
       /**
-       * the swimlane associated to this list. Used for templates
+       * the swimlane associated to this list. Optional for backward compatibility
        */
       type: String,
+      optional: true,
       defaultValue: '',
     },
     createdAt: {
@@ -146,7 +148,7 @@ Lists.attachSchema(
        */
       type: String,
       optional: true,
-      // silver is the default, so it is left out
+      // silver is the default
       allowedValues: ALLOWED_COLORS,
     },
     type: {
@@ -156,18 +158,39 @@ Lists.attachSchema(
       type: String,
       defaultValue: 'list',
     },
+    width: {
+      /**
+       * The width of the list in pixels (100-1000).
+       * Default width is 272 pixels.
+       */
+      type: Number,
+      optional: true,
+      defaultValue: 272,
+      custom() {
+        const w = this.value;
+        if (w < 100 || w > 1000) {
+          return 'widthOutOfRange';
+        }
+      },
+    },
+    // NOTE: collapsed state is per-user only, stored in user profile.collapsedLists
+    // and localStorage for non-logged-in users
+    // NOTE: width is per-board (shared with all users), stored in lists.width
   }),
 );
 
 Lists.allow({
   insert(userId, doc) {
-    return allowIsBoardMemberCommentOnly(userId, ReactiveCache.getBoard(doc.boardId));
+    // ReadOnly and CommentOnly users cannot create lists
+    return allowIsBoardMemberWithWriteAccess(userId, ReactiveCache.getBoard(doc.boardId));
   },
   update(userId, doc) {
-    return allowIsBoardMemberCommentOnly(userId, ReactiveCache.getBoard(doc.boardId));
+    // ReadOnly and CommentOnly users cannot edit lists
+    return allowIsBoardMemberWithWriteAccess(userId, ReactiveCache.getBoard(doc.boardId));
   },
   remove(userId, doc) {
-    return allowIsBoardMemberCommentOnly(userId, ReactiveCache.getBoard(doc.boardId));
+    // ReadOnly and CommentOnly users cannot delete lists
+    return allowIsBoardMemberWithWriteAccess(userId, ReactiveCache.getBoard(doc.boardId));
   },
   fetch: ['boardId'],
 });
@@ -189,7 +212,7 @@ Lists.helpers({
       _id = existingListWithSameName._id;
     } else {
       delete this._id;
-      delete this.swimlaneId;
+      this.swimlaneId = swimlaneId; // Set the target swimlane for the copied list
       _id = Lists.insert(this);
     }
 
@@ -203,7 +226,7 @@ Lists.helpers({
     });
   },
 
-  move(boardId, swimlaneId) {
+  async move(boardId, swimlaneId) {
     const boardList = ReactiveCache.getList({
       boardId,
       title: this.title,
@@ -212,9 +235,9 @@ Lists.helpers({
     let listId;
     if (boardList) {
       listId = boardList._id;
-      this.cards().forEach(card => {
-        card.move(boardId, this._id, boardList._id);
-      });
+      for (const card of this.cards()) {
+        await card.move(boardId, this._id, boardList._id);
+      }
     } else {
       console.log('list.title:', this.title);
       console.log('boardList:', boardList);
@@ -224,12 +247,13 @@ Lists.helpers({
         type: this.type,
         archived: false,
         wipLimit: this.wipLimit,
+        swimlaneId: swimlaneId, // Set the target swimlane for the moved list
       });
     }
 
-    this.cards(swimlaneId).forEach(card => {
-      card.move(boardId, swimlaneId, listId);
-    });
+    for (const card of this.cards(swimlaneId)) {
+      await card.move(boardId, swimlaneId, listId);
+    }
   },
 
   cards(swimlaneId) {
@@ -286,6 +310,27 @@ Lists.helpers({
     return this.starred === true;
   },
 
+  isCollapsed() {
+    if (Meteor.isClient) {
+      const user = ReactiveCache.getCurrentUser();
+      // Logged-in users: prefer profile/cookie-backed state
+      if (user && user.getCollapsedListFromStorage) {
+        const stored = user.getCollapsedListFromStorage(this.boardId, this._id);
+        if (typeof stored === 'boolean') {
+          return stored;
+        }
+      }
+      // Public users: fallback to cookie if available
+      if (!user && Users.getPublicCollapsedList) {
+        const stored = Users.getPublicCollapsedList(this.boardId, this._id);
+        if (typeof stored === 'boolean') {
+          return stored;
+        }
+      }
+    }
+    return this.collapsed === true;
+  },
+
   absoluteUrl() {
     const card = ReactiveCache.getCard({ listId: this._id });
     return card && card.absoluteUrl();
@@ -294,58 +339,58 @@ Lists.helpers({
     const card = ReactiveCache.getCard({ listId: this._id });
     return card && card.originRelativeUrl();
   },
-  remove() {
-    Lists.remove({ _id: this._id });
-  },
-});
-
-Lists.mutations({
-  rename(title) {
-    return { $set: { title } };
-  },
-  star(enable = true) {
-    return { $set: { starred: !!enable } };
+  async remove() {
+    return await Lists.removeAsync({ _id: this._id });
   },
 
-  archive() {
+  async rename(title) {
+    // Basic client-side validation - server will handle full sanitization
+    if (typeof title === 'string') {
+      // Basic length check to prevent abuse
+      const sanitizedTitle = title.length > 1000 ? title.substring(0, 1000) : title;
+      return await Lists.updateAsync(this._id, { $set: { title: sanitizedTitle } });
+    }
+    return await Lists.updateAsync(this._id, { $set: { title } });
+  },
+  async star(enable = true) {
+    return await Lists.updateAsync(this._id, { $set: { starred: !!enable } });
+  },
+  async collapse(enable = true) {
+    return await Lists.updateAsync(this._id, { $set: { collapsed: !!enable } });
+  },
+
+  async archive() {
     if (this.isTemplateList()) {
-      this.cards().forEach(card => {
-        return card.archive();
-      });
+      for (const card of this.cards()) {
+        await card.archive();
+      }
     }
-    return { $set: { archived: true, archivedAt: new Date() } };
+    return await Lists.updateAsync(this._id, { $set: { archived: true, archivedAt: new Date() } });
   },
 
-  restore() {
+  async restore() {
     if (this.isTemplateList()) {
-      this.allCards().forEach(card => {
-        return card.restore();
-      });
+      for (const card of this.allCards()) {
+        await card.restore();
+      }
     }
-    return { $set: { archived: false } };
+    return await Lists.updateAsync(this._id, { $set: { archived: false } });
   },
 
-  toggleSoftLimit(toggle) {
-    return { $set: { 'wipLimit.soft': toggle } };
+  async toggleSoftLimit(toggle) {
+    return await Lists.updateAsync(this._id, { $set: { 'wipLimit.soft': toggle } });
   },
 
-  toggleWipLimit(toggle) {
-    return { $set: { 'wipLimit.enabled': toggle } };
+  async toggleWipLimit(toggle) {
+    return await Lists.updateAsync(this._id, { $set: { 'wipLimit.enabled': toggle } });
   },
 
-  setWipLimit(limit) {
-    return { $set: { 'wipLimit.value': limit } };
+  async setWipLimit(limit) {
+    return await Lists.updateAsync(this._id, { $set: { 'wipLimit.value': limit } });
   },
 
-  setColor(newColor) {
-    if (newColor === 'silver') {
-      newColor = null;
-    }
-    return {
-      $set: {
-        color: newColor,
-      },
-    };
+  async setColor(newColor) {
+    return await Lists.updateAsync(this._id, { $set: { color: newColor } });
   },
 });
 
@@ -371,27 +416,70 @@ Lists.archivedListIds = () => {
 };
 
 Meteor.methods({
-  applyWipLimit(listId, limit) {
+  async applyWipLimit(listId, limit) {
     check(listId, String);
     check(limit, Number);
+
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in.');
+    }
+
+    const list = ReactiveCache.getList(listId);
+    if (!list) {
+      throw new Meteor.Error('list-not-found', 'List not found');
+    }
+
+    const board = ReactiveCache.getBoard(list.boardId);
+    if (!board || !board.hasAdmin(this.userId)) {
+      throw new Meteor.Error('not-authorized', 'You must be a board admin to modify WIP limits.');
+    }
+
     if (limit === 0) {
       limit = 1;
     }
-    ReactiveCache.getList(listId).setWipLimit(limit);
+    await list.setWipLimit(limit);
   },
 
-  enableWipLimit(listId) {
+  async enableWipLimit(listId) {
     check(listId, String);
+
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in.');
+    }
+
     const list = ReactiveCache.getList(listId);
+    if (!list) {
+      throw new Meteor.Error('list-not-found', 'List not found');
+    }
+
+    const board = ReactiveCache.getBoard(list.boardId);
+    if (!board || !board.hasAdmin(this.userId)) {
+      throw new Meteor.Error('not-authorized', 'You must be a board admin to modify WIP limits.');
+    }
+
     if (list.getWipLimit('value') === 0) {
-      list.setWipLimit(1);
+      await list.setWipLimit(1);
     }
     list.toggleWipLimit(!list.getWipLimit('enabled'));
   },
 
   enableSoftLimit(listId) {
     check(listId, String);
+    
+    if (!this.userId) {
+      throw new Meteor.Error('not-authorized', 'You must be logged in.');
+    }
+    
     const list = ReactiveCache.getList(listId);
+    if (!list) {
+      throw new Meteor.Error('list-not-found', 'List not found');
+    }
+    
+    const board = ReactiveCache.getBoard(list.boardId);
+    if (!board || !board.hasAdmin(this.userId)) {
+      throw new Meteor.Error('not-authorized', 'You must be a board admin to modify WIP limits.');
+    }
+    
     list.toggleSoftLimit(!list.getWipLimit('soft'));
   },
 
@@ -406,90 +494,159 @@ Meteor.methods({
         {
           fields: { title: 1 },
         },
-      )
-        .map(list => {
-          return list.title;
-        }),
+      ).map(list => list.title),
     ).sort();
+  },
+
+  updateListSort(listId, boardId, updateData) {
+    check(listId, String);
+    check(boardId, String);
+    check(updateData, Object);
+
+    const board = ReactiveCache.getBoard(boardId);
+    if (!board) {
+      throw new Meteor.Error('board-not-found', 'Board not found');
+    }
+
+    if (Meteor.isServer) {
+      if (typeof allowIsBoardMember === 'function') {
+        if (!allowIsBoardMember(this.userId, board)) {
+          throw new Meteor.Error('permission-denied', 'User does not have permission to modify this board');
+        }
+      }
+    }
+
+    const list = ReactiveCache.getList(listId);
+    if (!list) {
+      throw new Meteor.Error('list-not-found', 'List not found');
+    }
+
+    const validUpdateFields = ['sort', 'swimlaneId', 'updatedAt', 'modifiedAt'];
+    Object.keys(updateData).forEach(field => {
+      if (!validUpdateFields.includes(field)) {
+        throw new Meteor.Error('invalid-field', `Field ${field} is not allowed`);
+      }
+    });
+
+    if (updateData.swimlaneId) {
+      const swimlane = ReactiveCache.getSwimlane(updateData.swimlaneId);
+      if (!swimlane || swimlane.boardId !== boardId) {
+        throw new Meteor.Error('invalid-swimlane', 'Invalid swimlane for this board');
+      }
+    }
+
+    Lists.update(
+      { _id: listId, boardId },
+      {
+        $set: {
+          ...updateData,
+          modifiedAt: new Date(),
+        },
+      },
+    );
+
+    return {
+      success: true,
+      listId,
+      updatedFields: Object.keys(updateData),
+      timestamp: new Date().toISOString(),
+    };
   },
 });
 
-Lists.hookOptions.after.update = { fetchPrevious: false };
-
 if (Meteor.isServer) {
-  Meteor.startup(() => {
-    Lists._collection.createIndex({ modifiedAt: -1 });
-    Lists._collection.createIndex({ boardId: 1 });
-    Lists._collection.createIndex({ archivedAt: -1 });
+  Meteor.startup(async () => {
+    await Lists._collection.rawCollection().createIndex({ modifiedAt: -1 });
+    await Lists._collection.rawCollection().createIndex({ boardId: 1 });
+    await Lists._collection.rawCollection().createIndex({ archivedAt: -1 });
+  });
+}
+
+Lists.after.insert((userId, doc) => {
+  Activities.insert({
+    userId,
+    type: 'list',
+    activityType: 'createList',
+    boardId: doc.boardId,
+    listId: doc._id,
+    // this preserves the name so that the activity can be useful after the
+    // list is deleted
+    title: doc.title,
   });
 
-  Lists.after.insert((userId, doc) => {
+  // Track original position for new lists
+  Meteor.setTimeout(() => {
+    const list = Lists.findOne(doc._id);
+    if (list) {
+      list.trackOriginalPosition();
+    }
+  }, 100);
+});
+
+Lists.before.remove((userId, doc) => {
+  const cards = ReactiveCache.getCards({ listId: doc._id });
+  if (cards) {
+    cards.forEach(card => {
+      Cards.remove(card._id);
+    });
+  }
+  Activities.insert({
+    userId,
+    type: 'list',
+    activityType: 'removeList',
+    boardId: doc.boardId,
+    listId: doc._id,
+    title: doc.title,
+  });
+});
+
+// Ensure we don't fetch previous doc in after.update hook
+Lists.hookOptions.after.update = { fetchPrevious: false };
+
+Lists.after.update((userId, doc, fieldNames) => {
+  if (fieldNames.includes('title')) {
     Activities.insert({
       userId,
       type: 'list',
-      activityType: 'createList',
-      boardId: doc.boardId,
+      activityType: 'changedListTitle',
       listId: doc._id,
+      boardId: doc.boardId,
       // this preserves the name so that the activity can be useful after the
       // list is deleted
       title: doc.title,
     });
-  });
-
-  Lists.before.remove((userId, doc) => {
-    const cards = ReactiveCache.getCards({ listId: doc._id });
-    if (cards) {
-      cards.forEach(card => {
-        Cards.remove(card._id);
-      });
-    }
+  } else if (doc.archived) {
     Activities.insert({
       userId,
       type: 'list',
-      activityType: 'removeList',
-      boardId: doc.boardId,
+      activityType: 'archivedList',
       listId: doc._id,
+      boardId: doc.boardId,
+      // this preserves the name so that the activity can be useful after the
+      // list is deleted
       title: doc.title,
     });
-  });
+  } else if (fieldNames.includes('archived')) {
+    Activities.insert({
+      userId,
+      type: 'list',
+      activityType: 'restoredList',
+      listId: doc._id,
+      boardId: doc.boardId,
+      // this preserves the name so that the activity can be useful after the
+      // list is deleted
+      title: doc.title,
+    });
+  }
 
-  Lists.after.update((userId, doc, fieldNames) => {
-    if (fieldNames.includes('title')) {
-      Activities.insert({
-        userId,
-        type: 'list',
-        activityType: 'changedListTitle',
-        listId: doc._id,
-        boardId: doc.boardId,
-        // this preserves the name so that the activity can be useful after the
-        // list is deleted
-        title: doc.title,
-      });
-    } else if (doc.archived)  {
-      Activities.insert({
-        userId,
-        type: 'list',
-        activityType: 'archivedList',
-        listId: doc._id,
-        boardId: doc.boardId,
-        // this preserves the name so that the activity can be useful after the
-        // list is deleted
-        title: doc.title,
-      });
-    } else if (fieldNames.includes('archived'))  {
-      Activities.insert({
-        userId,
-        type: 'list',
-        activityType: 'restoredList',
-        listId: doc._id,
-        boardId: doc.boardId,
-        // this preserves the name so that the activity can be useful after the
-        // list is deleted
-        title: doc.title,
-      });
-    }
-  });
-}
+  // When sort or swimlaneId change, trigger a pub/sub refresh marker
+  if (fieldNames.includes('sort') || fieldNames.includes('swimlaneId')) {
+    Lists.direct.update(
+      { _id: doc._id },
+      { $set: { _updatedAt: new Date() } },
+    );
+  }
+});
 
 //LISTS REST API
 if (Meteor.isServer) {
@@ -568,17 +725,164 @@ if (Meteor.isServer) {
   JsonRoutes.add('POST', '/api/boards/:boardId/lists', function(req, res) {
     try {
       const paramBoardId = req.params.boardId;
-      Authentication.checkBoardAccess(req.userId, paramBoardId);
+      Authentication.checkBoardWriteAccess(req.userId, paramBoardId);
       const board = ReactiveCache.getBoard(paramBoardId);
       const id = Lists.insert({
         title: req.body.title,
         boardId: paramBoardId,
         sort: board.lists().length,
+        swimlaneId: req.body.swimlaneId || board.getDefaultSwimline()._id, // Use provided swimlaneId or default
       });
       JsonRoutes.sendResult(res, {
         code: 200,
         data: {
           _id: id,
+        },
+      });
+    } catch (error) {
+      JsonRoutes.sendResult(res, {
+        code: 200,
+        data: error,
+      });
+    }
+  });
+
+  /**
+   * @operation edit_list
+   * @summary Edit a List
+   *
+   * @description This updates a list on a board.
+   * You can update the title, color, wipLimit, starred, and collapsed properties.
+   *
+   * @param {string} boardId the board ID
+   * @param {string} listId the ID of the list to update
+   * @param {string} [title] the new title of the list
+   * @param {string} [color] the new color of the list
+   * @param {Object} [wipLimit] the WIP limit configuration
+   * @param {boolean} [starred] whether the list is starred
+   * @param {boolean} [collapsed] whether the list is collapsed
+   * @return_type {_id: string}
+   */
+  JsonRoutes.add('PUT', '/api/boards/:boardId/lists/:listId', function(
+    req,
+    res,
+  ) {
+    try {
+      const paramBoardId = req.params.boardId;
+      const paramListId = req.params.listId;
+      let updated = false;
+      Authentication.checkBoardWriteAccess(req.userId, paramBoardId);
+
+      const list = ReactiveCache.getList({
+        _id: paramListId,
+        boardId: paramBoardId,
+        archived: false,
+      });
+
+      if (!list) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'List not found' },
+        });
+        return;
+      }
+
+      // Update title if provided
+      if (req.body.title) {
+        // Basic client-side validation - server will handle full sanitization
+        const newTitle = req.body.title.length > 1000 ? req.body.title.substring(0, 1000) : req.body.title;
+
+        if (process.env.DEBUG === 'true' && newTitle !== req.body.title) {
+          console.warn('Sanitized list title input:', req.body.title, '->', newTitle);
+        }
+
+        Lists.direct.update(
+          {
+            _id: paramListId,
+            boardId: paramBoardId,
+            archived: false,
+          },
+          {
+            $set: {
+              title: newTitle,
+            },
+          },
+        );
+        updated = true;
+      }
+
+      // Update color if provided
+      if (req.body.color) {
+        const newColor = req.body.color;
+        Lists.direct.update(
+          {
+            _id: paramListId,
+            boardId: paramBoardId,
+            archived: false,
+          },
+          {
+            $set: {
+              color: newColor,
+            },
+          },
+        );
+        updated = true;
+      }
+
+      // Update starred status if provided
+      if (req.body.hasOwnProperty('starred')) {
+        const newStarred = req.body.starred;
+        Lists.direct.update(
+          {
+            _id: paramListId,
+            boardId: paramBoardId,
+            archived: false,
+          },
+          {
+            $set: {
+              starred: newStarred,
+            },
+          },
+        );
+        updated = true;
+      }
+
+      // NOTE: collapsed state removed from board-level
+      // It's per-user only - use user profile methods instead
+
+      // Update wipLimit if provided
+      if (req.body.wipLimit) {
+        const newWipLimit = req.body.wipLimit;
+        Lists.direct.update(
+          {
+            _id: paramListId,
+            boardId: paramBoardId,
+            archived: false,
+          },
+          {
+            $set: {
+              wipLimit: newWipLimit,
+            },
+          },
+        );
+        updated = true;
+      }
+
+      // Check if update is true or false
+      if (!updated) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: {
+            message: 'Error',
+          },
+        });
+        return;
+      }
+
+      JsonRoutes.sendResult(res, {
+        code: 200,
+        data: {
+          _id: paramListId,
         },
       });
     } catch (error) {
@@ -607,7 +911,7 @@ if (Meteor.isServer) {
     try {
       const paramBoardId = req.params.boardId;
       const paramListId = req.params.listId;
-      Authentication.checkBoardAccess(req.userId, paramBoardId);
+      Authentication.checkBoardWriteAccess(req.userId, paramBoardId);
       Lists.remove({ _id: paramListId, boardId: paramBoardId });
       JsonRoutes.sendResult(res, {
         code: 200,
@@ -623,5 +927,78 @@ if (Meteor.isServer) {
     }
   });
 }
+
+// Position history tracking methods
+Lists.helpers({
+  /**
+   * Track the original position of this list
+   */
+  trackOriginalPosition() {
+    const existingHistory = PositionHistory.findOne({
+      boardId: this.boardId,
+      entityType: 'list',
+      entityId: this._id,
+    });
+
+    if (!existingHistory) {
+      PositionHistory.insert({
+        boardId: this.boardId,
+        entityType: 'list',
+        entityId: this._id,
+        originalPosition: {
+          sort: this.sort,
+          title: this.title,
+        },
+        originalSwimlaneId: this.swimlaneId || null,
+        originalTitle: this.title,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
+  },
+
+  /**
+   * Get the original position history for this list
+   */
+  getOriginalPosition() {
+    return PositionHistory.findOne({
+      boardId: this.boardId,
+      entityType: 'list',
+      entityId: this._id,
+    });
+  },
+
+  /**
+   * Check if this list has moved from its original position
+   */
+  hasMovedFromOriginalPosition() {
+    const history = this.getOriginalPosition();
+    if (!history) return false;
+
+    const currentSwimlaneId = this.swimlaneId || null;
+    return history.originalPosition.sort !== this.sort ||
+           history.originalSwimlaneId !== currentSwimlaneId;
+  },
+
+  /**
+   * Get a description of the original position
+   */
+  getOriginalPositionDescription() {
+    const history = this.getOriginalPosition();
+    if (!history) return 'No original position data';
+
+    const swimlaneInfo = history.originalSwimlaneId ?
+      ` in swimlane ${history.originalSwimlaneId}` :
+      ' in default swimlane';
+    return `Original position: ${history.originalPosition.sort || 0}${swimlaneInfo}`;
+  },
+
+  /**
+   * Get the effective swimlane ID (for backward compatibility)
+   */
+  getEffectiveSwimlaneId() {
+    return this.swimlaneId || null;
+  },
+});
 
 export default Lists;

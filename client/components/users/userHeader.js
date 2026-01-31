@@ -1,5 +1,6 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { TAPi18n } from '/imports/i18n';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 
 Template.headerUserBar.events({
   'click .js-open-header-member-menu': Popup.open('memberMenu'),
@@ -30,6 +31,10 @@ Template.memberMenuPopup.helpers({
       // No need to getTemplatesBoardSlug() on public board
       return false;
     }
+  },
+  isSupportPageEnabled() {
+    const setting = ReactiveCache.getCurrentSetting();
+    return setting && setting.supportPageEnabled;
   },
   isSameDomainNameSettingValue(){
     const currSett = ReactiveCache.getCurrentSetting();
@@ -62,6 +67,15 @@ Template.memberMenuPopup.helpers({
 });
 
 Template.memberMenuPopup.events({
+  'click .js-open-bookmarks'(e) {
+    e.preventDefault();
+    if (Utils.isMiniScreen()) {
+      FlowRouter.go('bookmarks');
+      Popup.back();
+    } else {
+      Popup.open('bookmarksPopup')(e);
+    }
+  },
   'click .js-my-cards'() {
     Popup.back();
   },
@@ -77,6 +91,19 @@ Template.memberMenuPopup.events({
   'click .js-change-avatar': Popup.open('changeAvatar'),
   'click .js-change-password': Popup.open('changePassword'),
   'click .js-change-language': Popup.open('changeLanguage'),
+  'click .js-support': Popup.open('support'),
+  'click .js-notifications-drawer-toggle'() {
+    Session.set('showNotificationsDrawer', !Session.get('showNotificationsDrawer'));
+  },
+  'click .js-toggle-grey-icons'(event) {
+    event.preventDefault();
+    const currentUser = ReactiveCache.getCurrentUser();
+    if (!currentUser || !Meteor.userId()) return;
+    const current = (currentUser.profile && currentUser.profile.GreyIcons) || false;
+    Meteor.call('toggleGreyIcons', (err) => {
+      if (err && process.env.DEBUG === 'true') console.error('toggleGreyIcons error', err);
+    });
+  },
   'click .js-logout'(event) {
     event.preventDefault();
 
@@ -240,8 +267,21 @@ Template.editProfilePopup.events({
   },
   'click #deleteButton': Popup.afterConfirm('userDelete', function() {
     Popup.back();
-    Users.remove(Meteor.userId());
-    AccountsTemplates.logout();
+
+    // Use secure server method for self-deletion
+    Meteor.call('removeUser', Meteor.userId(), (error, result) => {
+      if (error) {
+        if (process.env.DEBUG === 'true') {
+          console.error('Error removing user:', error);
+        }
+        alert('Error deleting account: ' + error.reason);
+      } else {
+        if (process.env.DEBUG === 'true') {
+          console.log('User deleted successfully:', result);
+        }
+        AccountsTemplates.logout();
+      }
+    });
   }),
 });
 
@@ -255,7 +295,7 @@ Template.changePasswordPopup.onRendered(function() {
 Template.changeLanguagePopup.helpers({
   languages() {
     return TAPi18n.getSupportedLanguages()
-      .map(({ tag, name }) => ({ tag: tag, name }))
+      .map(({ tag, name, rtl }) => ({ tag, name, rtl }))
       .sort((a, b) => {
         if (a.name === b.name) {
           return 0;
@@ -267,6 +307,30 @@ Template.changeLanguagePopup.helpers({
 
   isCurrentLanguage() {
     return this.tag === TAPi18n.getLanguage();
+  },
+
+  languageFlag() {
+    const flagMap = {
+      'en': '🇺🇸', 'es': '🇪🇸', 'fr': '🇫🇷', 'de': '🇩🇪', 'it': '🇮🇹', 'pt': '🇵🇹', 'ru': '🇷🇺',
+      'ja': '🇯🇵', 'ko': '🇰🇷', 'zh': '🇨🇳', 'ar': '🇸🇦', 'hi': '🇮🇳', 'th': '🇹🇭', 'vi': '🇻🇳',
+      'tr': '🇹🇷', 'pl': '🇵🇱', 'nl': '🇳🇱', 'sv': '🇸🇪', 'da': '🇩🇰', 'no': '🇳🇴', 'fi': '🇫🇮',
+      'cs': '🇨🇿', 'hu': '🇭🇺', 'ro': '🇷🇴', 'bg': '🇧🇬', 'hr': '🇭🇷', 'sk': '🇸🇰', 'sl': '🇸🇮',
+      'et': '🇪🇪', 'lv': '🇱🇻', 'lt': '🇱🇹', 'el': '🇬🇷', 'he': '🇮🇱', 'uk': '🇺🇦', 'be': '🇧🇾',
+      'ca': '🇪🇸', 'eu': '🇪🇸', 'gl': '🇪🇸', 'cy': '🇬🇧', 'ga': '🇮🇪', 'mt': '🇲🇹', 'is': '🇮🇸',
+      'mk': '🇲🇰', 'sq': '🇦🇱', 'sr': '🇷🇸', 'bs': '🇧🇦', 'me': '🇲🇪', 'fa': '🇮🇷', 'ur': '🇵🇰',
+      'bn': '🇧🇩', 'ta': '🇮🇳', 'te': '🇮🇳', 'ml': '🇮🇳', 'kn': '🇮🇳', 'gu': '🇮🇳', 'pa': '🇮🇳',
+      'or': '🇮🇳', 'as': '🇮🇳', 'ne': '🇳🇵', 'si': '🇱🇰', 'my': '🇲🇲', 'km': '🇰🇭', 'lo': '🇱🇦',
+      'ka': '🇬🇪', 'hy': '🇦🇲', 'az': '🇦🇿', 'kk': '🇰🇿', 'ky': '🇰🇬', 'uz': '🇺🇿', 'mn': '🇲🇳',
+      'bo': '🇨🇳', 'dz': '🇧🇹', 'ug': '🇨🇳', 'ii': '🇨🇳', 'za': '🇨🇳', 'yue': '🇭🇰', 'zh-HK': '🇭🇰',
+      'zh-TW': '🇹🇼', 'zh-CN': '🇨🇳', 'id': '🇮🇩', 'ms': '🇲🇾', 'tl': '🇵🇭', 'ceb': '🇵🇭',
+      'haw': '🇺🇸', 'mi': '🇳🇿', 'sm': '🇼🇸', 'to': '🇹🇴', 'fj': '🇫🇯', 'ty': '🇵🇫', 'mg': '🇲🇬',
+      'sw': '🇹🇿', 'am': '🇪🇹', 'om': '🇪🇹', 'so': '🇸🇴', 'ti': '🇪🇷', 'ha': '🇳🇬', 'yo': '🇳🇬',
+      'ig': '🇳🇬', 'zu': '🇿🇦', 'xh': '🇿🇦', 'af': '🇿🇦', 'st': '🇿🇦', 'tn': '🇿🇦', 'ss': '🇿🇦',
+      've': '🇿🇦', 'ts': '🇿🇦', 'nr': '🇿🇦', 'nso': '🇿🇦', 'wo': '🇸🇳', 'ff': '🇸🇳', 'dy': '🇲🇱',
+      'bm': '🇲🇱', 'tw': '🇬🇭', 'ak': '🇬🇭', 'lg': '🇺🇬', 'rw': '🇷🇼', 'rn': '🇧🇮', 'ny': '🇲🇼',
+      'sn': '🇿🇼', 'nd': '🇿🇼'
+    };
+    return flagMap[this.tag] || '🌐';
   },
 });
 
@@ -283,16 +347,6 @@ Template.changeLanguagePopup.events({
 });
 
 Template.changeSettingsPopup.helpers({
-  hiddenSystemMessages() {
-    const currentUser = ReactiveCache.getCurrentUser();
-    if (currentUser) {
-      return (currentUser.profile || {}).hasHiddenSystemMessages;
-    } else if (window.localStorage.getItem('hasHiddenSystemMessages')) {
-      return true;
-    } else {
-      return false;
-    }
-  },
   rescueCardDescription() {
     const currentUser = ReactiveCache.getCurrentUser();
     if (currentUser) {
@@ -325,7 +379,7 @@ Template.changeSettingsPopup.helpers({
     });
   },
   startDayOfWeek() {
-    currentUser = Meteor.user();
+    currentUser = ReactiveCache.getCurrentUser();
     if (currentUser) {
       return currentUser.getStartDayOfWeek();
     } else {
@@ -343,23 +397,13 @@ Template.changeSettingsPopup.events({
     return ret;
   },
   'click .js-toggle-desktop-drag-handles'() {
-    currentUser = Meteor.user();
+    const currentUser = ReactiveCache.getCurrentUser();
     if (currentUser) {
       Meteor.call('toggleDesktopDragHandles');
     } else if (window.localStorage.getItem('showDesktopDragHandles')) {
       window.localStorage.removeItem('showDesktopDragHandles');
     } else {
       window.localStorage.setItem('showDesktopDragHandles', 'true');
-    }
-  },
-  'click .js-toggle-system-messages'() {
-    currentUser = Meteor.user();
-    if (currentUser) {
-      Meteor.call('toggleSystemMessages');
-    } else if (window.localStorage.getItem('hasHiddenSystemMessages')) {
-      window.localStorage.removeItem('hasHiddenSystemMessages');
-    } else {
-      window.localStorage.setItem('hasHiddenSystemMessages', 'true');
     }
   },
   'click .js-rescue-card-description'() {
@@ -375,7 +419,7 @@ Template.changeSettingsPopup.events({
       templateInstance.$('#start-day-of-week').val(),
       10,
     );
-    const currentUser = Meteor.user();
+    const currentUser = ReactiveCache.getCurrentUser();
     if (isNaN(minLimit) || minLimit < -1) {
       minLimit = -1;
     }

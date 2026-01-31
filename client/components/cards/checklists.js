@@ -119,6 +119,7 @@ BlazeComponent.extendComponent({
     event.preventDefault();
     const textarea = this.find('textarea.js-add-checklist-item');
     const newlineBecomesNewChecklistItem = this.find('input#toggleNewlineBecomesNewChecklistItem');
+    const newlineBecomesNewChecklistItemOriginOrder = this.find('input#toggleNewlineBecomesNewChecklistItemOriginOrder');
     const title = textarea.value.trim();
     const checklist = this.currentData().checklist;
 
@@ -127,22 +128,28 @@ BlazeComponent.extendComponent({
       if (newlineBecomesNewChecklistItem.checked) {
         checklistItems = title.split('\n').map(_value => _value.trim());
         if (this.currentData().position === 'top') {
-          checklistItems = checklistItems.reverse();
+          if (newlineBecomesNewChecklistItemOriginOrder.checked === false) {
+            checklistItems = checklistItems.reverse();
+          }
         }
       }
+      let addIndex;
+      let sortIndex;
+      if (this.currentData().position === 'top') {
+        sortIndex = Utils.calculateIndexData(null, checklist.firstItem()).base;
+        addIndex = -1;
+      } else {
+        sortIndex = Utils.calculateIndexData(checklist.lastItem(), null).base;
+        addIndex = 1;
+      }
       for (let checklistItem of checklistItems) {
-        let sortIndex;
-        if (this.currentData().position === 'top') {
-          sortIndex = Utils.calculateIndexData(null, checklist.firstItem()).base;
-        } else {
-          sortIndex = Utils.calculateIndexData(checklist.lastItem(), null).base;
-        }
         ChecklistItems.insert({
           title: checklistItem,
           checklistId: checklist._id,
           cardId: checklist.cardId,
           sort: sortIndex,
         });
+        sortIndex += addIndex;
       }
     }
     // We keep the form opened, empty it.
@@ -201,12 +208,8 @@ BlazeComponent.extendComponent({
   },
 
   events() {
-    const events = {
-    };
-
     return [
       {
-        ...events,
         'click .js-open-checklist-details-menu': Popup.open('checklistActions'),
         'submit .js-add-checklist': this.addChecklist,
         'submit .js-edit-checklist-title': this.editChecklist,
@@ -217,6 +220,10 @@ BlazeComponent.extendComponent({
         'focus .js-add-checklist-item': this.focusChecklistItem,
         // add and delete checklist / checklist-item
         'click .js-open-inlined-form': this.closeAllInlinedForms,
+        'click #toggleHideFinishedChecklist'(event) {
+          event.preventDefault();
+          this.data().card.toggleHideFinishedChecklist();
+        },
         keydown: this.pressKey,
       },
     ];
@@ -271,16 +278,6 @@ Template.checklists.helpers({
     const ret = card.checklists();
     return ret;
   },
-  showAtMinicard() {
-    const card = ReactiveCache.getCard(this.cardId);
-    const ret = card.checklists({'showAtMinicard':1});
-    return ret;
-  },
-  hideCheckedItems() {
-    const currentUser = ReactiveCache.getCurrentUser();
-    if (currentUser) return currentUser.hasHideCheckedItems();
-    return false;
-  },
 });
 
 BlazeComponent.extendComponent({
@@ -303,26 +300,9 @@ BlazeComponent.extendComponent({
 }).register('addChecklistItemForm');
 
 BlazeComponent.extendComponent({
-  toggleItem() {
-    const checklist = this.currentData().checklist;
-    const item = this.currentData().item;
-    if (checklist && item && item._id) {
-      item.toggleItem();
-    }
-  },
   events() {
     return [
       {
-        'click .js-checklist-item .check-box-container': this.toggleItem,
-        'click #toggleShowChecklistAtMinicardButton'() {
-          const checklist = this.checklist;
-          if (checklist && checklist._id) {
-            Meteor.call('toggleShowChecklistAtMinicard', checklist._id);
-          }
-        },
-        'click #toggleHideCheckedItemsButton'() {
-          Meteor.call('toggleHideCheckedItems');
-        },
         'click .js-delete-checklist': Popup.afterConfirm('checklistDelete', function () {
           Popup.back(2);
           const checklist = this.checklist;
@@ -332,6 +312,16 @@ BlazeComponent.extendComponent({
         }),
         'click .js-move-checklist': Popup.open('moveChecklist'),
         'click .js-copy-checklist': Popup.open('copyChecklist'),
+        'click .js-hide-checked-checklist-items'(event) {
+          event.preventDefault();
+          this.data().checklist.toggleHideCheckedChecklistItems();
+          Popup.back();
+        },
+        'click .js-hide-all-checklist-items'(event) {
+          event.preventDefault();
+          this.data().checklist.toggleHideAllChecklistItems();
+          Popup.back();
+        },
       }
     ]
   }
@@ -357,11 +347,6 @@ BlazeComponent.extendComponent({
 }).register('editChecklistItemForm');
 
 Template.checklistItemDetail.helpers({
-  hideCheckedItems() {
-    const user = ReactiveCache.getCurrentUser();
-    if (user) return user.hasHideCheckedItems();
-    return false;
-  },
 });
 
 BlazeComponent.extendComponent({

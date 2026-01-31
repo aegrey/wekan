@@ -1,5 +1,6 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import DOMPurify from 'dompurify';
+import { sanitizeHTML, sanitizeText } from '/imports/lib/secureDOMPurify';
 import { TAPi18n } from '/imports/i18n';
 
 const activitiesPerPage = 500;
@@ -13,39 +14,41 @@ BlazeComponent.extendComponent({
     const sidebar = Sidebar;
     sidebar && sidebar.callFirstWith(null, 'resetNextPeak');
     this.autorun(() => {
-      let mode = this.data().mode;
-      const capitalizedMode = Utils.capitalize(mode);
-      let searchId;
-      if (mode === 'linkedcard' || mode === 'linkedboard') {
-        searchId = Utils.getCurrentCard().linkedId;
-        mode = mode.replace('linked', '');
-      } else if (mode === 'card') {
-        searchId = Utils.getCurrentCardId();
-      } else {
-        searchId = Session.get(`current${capitalizedMode}`);
-      }
-      const limit = this.page.get() * activitiesPerPage;
-      const user = ReactiveCache.getCurrentUser();
-      const hideSystem = user ? user.hasHiddenSystemMessages() : false;
-      if (searchId === null) return;
-
-      this.subscribe('activities', mode, searchId, limit, hideSystem, () => {
-        this.loadNextPageLocked = false;
-
-        // TODO the guard can be removed as soon as the TODO above is resolved
-        if (!sidebar) return;
-        // If the sibear peak hasn't increased, that mean that there are no more
-        // activities, and we can stop calling new subscriptions.
-        // XXX This is hacky! We need to know excatly and reactively how many
-        // activities there are, we probably want to denormalize this number
-        // dirrectly into card and board documents.
-        const nextPeakBefore = sidebar.callFirstWith(null, 'getNextPeak');
-        sidebar.calculateNextPeak();
-        const nextPeakAfter = sidebar.callFirstWith(null, 'getNextPeak');
-        if (nextPeakBefore === nextPeakAfter) {
-          sidebar.callFirstWith(null, 'resetNextPeak');
+      let mode = this.data()?.mode;
+      if (mode) {
+        const capitalizedMode = Utils.capitalize(mode);
+        let searchId;
+        const showActivities = this.showActivities();
+        if (mode === 'linkedcard' || mode === 'linkedboard') {
+          const currentCard = Utils.getCurrentCard();
+          searchId = currentCard.linkedId;
+          mode = mode.replace('linked', '');
+        } else if (mode === 'card') {
+          searchId = Utils.getCurrentCardId();
+        } else {
+          searchId = Session.get(`current${capitalizedMode}`);
         }
-      });
+        const limit = this.page.get() * activitiesPerPage;
+        if (searchId === null) return;
+
+        this.subscribe('activities', mode, searchId, limit, showActivities, () => {
+          this.loadNextPageLocked = false;
+
+          // TODO the guard can be removed as soon as the TODO above is resolved
+          if (!sidebar) return;
+          // If the sibear peak hasn't increased, that mean that there are no more
+          // activities, and we can stop calling new subscriptions.
+          // XXX This is hacky! We need to know excatly and reactively how many
+          // activities there are, we probably want to denormalize this number
+          // dirrectly into card and board documents.
+          const nextPeakBefore = sidebar.callFirstWith(null, 'getNextPeak');
+          sidebar.calculateNextPeak();
+          const nextPeakAfter = sidebar.callFirstWith(null, 'getNextPeak');
+          if (nextPeakBefore === nextPeakAfter) {
+            sidebar.callFirstWith(null, 'resetNextPeak');
+          }
+        });
+      }
     });
   },
   loadNextPage() {
@@ -54,14 +57,26 @@ BlazeComponent.extendComponent({
       this.loadNextPageLocked = true;
     }
   },
-}).register('activities');
-
-Template.activities.helpers({
-  activities() {
-    const ret = this.card.activities();
+  showActivities() {
+    let ret = false;
+    let mode = this.data()?.mode;
+    if (mode) {
+      if (mode === 'linkedcard' || mode === 'linkedboard') {
+        const currentCard = Utils.getCurrentCard();
+        ret = currentCard.showActivities ?? false;
+      } else if (mode === 'card') {
+        ret = this.data()?.card?.showActivities ?? false;
+      } else {
+        ret = Utils.getCurrentBoard().showActivities ?? false;
+      }
+    }
     return ret;
   },
-});
+  activities() {
+    const ret = this.data().card.activities();
+    return ret;
+  },
+}).register('activities');
 
 BlazeComponent.extendComponent({
   checkItem() {
@@ -202,15 +217,11 @@ BlazeComponent.extendComponent({
             {
               href: source.url,
             },
-            DOMPurify.sanitize(source.system, {
-              ALLOW_UNKNOWN_PROTOCOLS: true,
-            }),
+            sanitizeHTML(source.system),
           ),
         );
       } else {
-        return DOMPurify.sanitize(source.system, {
-          ALLOW_UNKNOWN_PROTOCOLS: true,
-        });
+        return sanitizeHTML(source.system);
       }
     }
     return null;
@@ -234,10 +245,10 @@ BlazeComponent.extendComponent({
               href: `${attachment.link()}?download=true`,
               target: '_blank',
             },
-            DOMPurify.sanitize(attachment.name),
+            sanitizeText(attachment.name),
           ),
         )) ||
-      DOMPurify.sanitize(this.currentData().activity.attachmentName)
+      sanitizeText(this.currentData().activity.attachmentName)
     );
   },
 
@@ -247,37 +258,11 @@ BlazeComponent.extendComponent({
     return customField.name;
   },
 
-  events() {
-    return [
-      {
-        // XXX We should use Popup.afterConfirmation here
-        'click .js-delete-comment': Popup.afterConfirm('deleteComment', () => {
-          const commentId = this.data().activity.commentId;
-          CardComments.remove(commentId);
-          Popup.back();
-        }),
-        'submit .js-edit-comment'(evt) {
-          evt.preventDefault();
-          const commentText = this.currentComponent()
-            .getValue()
-            .trim();
-          const commentId = Template.parentData().activity.commentId;
-          if (commentText) {
-            CardComments.update(commentId, {
-              $set: {
-                text: commentText,
-              },
-            });
-          }
-        },
-      },
-    ];
-  },
 }).register('activity');
 
 Template.activity.helpers({
   sanitize(value) {
-    return DOMPurify.sanitize(value, { ALLOW_UNKNOWN_PROTOCOLS: true });
+    return sanitizeHTML(value);
   },
 });
 
@@ -348,7 +333,7 @@ function createCardLink(card, board) {
           href: card.originRelativeUrl(),
           class: 'action-card',
         },
-        DOMPurify.sanitize(text, { ALLOW_UNKNOWN_PROTOCOLS: true }),
+        sanitizeHTML(text),
       ),
     )
   );
@@ -365,7 +350,7 @@ function createBoardLink(board, list) {
           href: board.originRelativeUrl(),
           class: 'action-board',
         },
-        DOMPurify.sanitize(text, { ALLOW_UNKNOWN_PROTOCOLS: true }),
+        sanitizeHTML(text),
       ),
     )
   );

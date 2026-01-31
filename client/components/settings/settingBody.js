@@ -1,34 +1,350 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { TAPi18n } from '/imports/i18n';
 import { ALLOWED_WAIT_SPINNERS } from '/config/const';
+import LockoutSettings from '/models/lockoutSettings';
+import { 
+  cronMigrationProgress, 
+  cronMigrationStatus, 
+  cronMigrationCurrentStep, 
+  cronMigrationSteps, 
+  cronIsMigrating, 
+  cronJobs,
+  cronMigrationCurrentStepNum,
+  cronMigrationTotalSteps
+} from '/imports/cronMigrationClient';
+
 
 BlazeComponent.extendComponent({
   onCreated() {
     this.error = new ReactiveVar('');
     this.loading = new ReactiveVar(false);
-    this.forgotPasswordSetting = new ReactiveVar(true);
+    this.forgotPasswordSetting = new ReactiveVar(false);
     this.generalSetting = new ReactiveVar(true);
     this.emailSetting = new ReactiveVar(false);
     this.accountSetting = new ReactiveVar(false);
     this.tableVisibilityModeSetting = new ReactiveVar(false);
     this.announcementSetting = new ReactiveVar(false);
+    this.accessibilitySetting = new ReactiveVar(false);
     this.layoutSetting = new ReactiveVar(false);
     this.webhookSetting = new ReactiveVar(false);
+    this.attachmentSettings = new ReactiveVar(false);
+    this.cronSettings = new ReactiveVar(false);
+    this.migrationErrorsList = new ReactiveVar([]);
 
     Meteor.subscribe('setting');
     Meteor.subscribe('mailServer');
     Meteor.subscribe('accountSettings');
     Meteor.subscribe('tableVisibilityModeSettings');
     Meteor.subscribe('announcements');
+    Meteor.subscribe('accessibilitySettings');
     Meteor.subscribe('globalwebhooks');
+    Meteor.subscribe('lockoutSettings');
+    
+    // Poll for migration errors
+    this.errorPollInterval = Meteor.setInterval(() => {
+      if (this.cronSettings.get()) {
+        Meteor.call('cron.getAllMigrationErrors', 50, (error, result) => {
+          if (!error && result) {
+            this.migrationErrorsList.set(result);
+          }
+        });
+      }
+    }, 5000); // Poll every 5 seconds
   },
+
+  onDestroyed() {
+    if (this.errorPollInterval) {
+      Meteor.clearInterval(this.errorPollInterval);
+    }
+  },
+
 
   setError(error) {
     this.error.set(error);
   },
+  
+  // Template helpers moved to BlazeComponent - using different names to avoid conflicts
+  isGeneralSetting() {
+    return this.generalSetting && this.generalSetting.get();
+  },
+  isEmailSetting() {
+    return this.emailSetting && this.emailSetting.get();
+  },
+  isAccountSetting() {
+    return this.accountSetting && this.accountSetting.get();
+  },
+  isTableVisibilityModeSetting() {
+    return this.tableVisibilityModeSetting && this.tableVisibilityModeSetting.get();
+  },
+  isAnnouncementSetting() {
+    return this.announcementSetting && this.announcementSetting.get();
+  },
+  isAccessibilitySetting() {
+    return this.accessibilitySetting && this.accessibilitySetting.get();
+  },
+  isLayoutSetting() {
+    return this.layoutSetting && this.layoutSetting.get();
+  },
+  isWebhookSetting() {
+    return this.webhookSetting && this.webhookSetting.get();
+  },
+  isAttachmentSettings() {
+    return this.attachmentSettings && this.attachmentSettings.get();
+  },
+  isCronSettings() {
+    return this.cronSettings && this.cronSettings.get();
+  },
+  isLoading() {
+    return this.loading && this.loading.get();
+  },
+
+  // Attachment settings helpers
+  filesystemPath() {
+    return process.env.WRITABLE_PATH || '/data';
+  },
+  
+  attachmentsPath() {
+    const writablePath = process.env.WRITABLE_PATH || '/data';
+    return `${writablePath}/attachments`;
+  },
+  
+  avatarsPath() {
+    const writablePath = process.env.WRITABLE_PATH || '/data';
+    return `${writablePath}/avatars`;
+  },
+  
+  gridfsEnabled() {
+    return process.env.GRIDFS_ENABLED === 'true';
+  },
+  
+  s3Enabled() {
+    return process.env.S3_ENABLED === 'true';
+  },
+  
+  s3Endpoint() {
+    return process.env.S3_ENDPOINT || '';
+  },
+  
+  s3Bucket() {
+    return process.env.S3_BUCKET || '';
+  },
+  
+  s3Region() {
+    return process.env.S3_REGION || '';
+  },
+  
+  s3SslEnabled() {
+    return process.env.S3_SSL_ENABLED === 'true';
+  },
+  
+  s3Port() {
+    return process.env.S3_PORT || 443;
+  },
+
+  // Cron settings helpers
+  migrationStatus() {
+    return cronMigrationStatus.get() || TAPi18n.__('idle');
+  },
+  
+  migrationProgress() {
+    return cronMigrationProgress.get() || 0;
+  },
+  
+  migrationCurrentStep() {
+    return cronMigrationCurrentStep.get() || '';
+  },
+  
+  isMigrating() {
+    return cronIsMigrating.get() || false;
+  },
+  
+  migrationSteps() {
+    return cronMigrationSteps.get() || [];
+  },
+  
+  migrationStepsWithIndex() {
+    const steps = cronMigrationSteps.get() || [];
+    return steps.map((step, idx) => ({
+      ...step,
+      index: idx + 1
+    }));
+  },
+  
+  cronJobs() {
+    return cronJobs.get() || [];
+  },
+
+  migrationCurrentStepNum() {
+    return cronMigrationCurrentStepNum.get() || 0;
+  },
+
+  migrationTotalSteps() {
+    return cronMigrationTotalSteps.get() || 0;
+  },
+
+  migrationErrors() {
+    return this.migrationErrorsList ? this.migrationErrorsList.get() : [];
+  },
+
+  hasErrors() {
+    const errors = this.migrationErrors();
+    return errors && errors.length > 0;
+  },
+
+  formatDateTime(date) {
+    if (!date) return '';
+    return moment(date).format('YYYY-MM-DD HH:mm:ss');
+  },
 
   setLoading(w) {
     this.loading.set(w);
+  },
+
+  // Event handlers for attachment settings
+  'click button.js-test-s3-connection'(event) {
+    event.preventDefault();
+    const secretKey = $('#s3-secret-key').val();
+    if (!secretKey) {
+      alert(TAPi18n.__('s3-secret-key-required'));
+      return;
+    }
+
+    Meteor.call('testS3Connection', { secretKey }, (error, result) => {
+      if (error) {
+        alert(TAPi18n.__('s3-connection-failed') + ': ' + error.reason);
+      } else {
+        alert(TAPi18n.__('s3-connection-success'));
+      }
+    });
+  },
+
+  'click button.js-save-s3-settings'(event) {
+    event.preventDefault();
+    const secretKey = $('#s3-secret-key').val();
+    if (!secretKey) {
+      alert(TAPi18n.__('s3-secret-key-required'));
+      return;
+    }
+
+    Meteor.call('saveS3Settings', { secretKey }, (error, result) => {
+      if (error) {
+        alert(TAPi18n.__('s3-settings-save-failed') + ': ' + error.reason);
+      } else {
+        alert(TAPi18n.__('s3-settings-saved'));
+        $('#s3-secret-key').val(''); // Clear the password field
+      }
+    });
+  },
+
+  // Event handlers for cron settings
+  'click button.js-start-migration'(event) {
+    event.preventDefault();
+    this.setLoading(true);
+    const selectedIndex = parseInt($('.js-migration-select').val() || '0', 10);
+    
+    if (selectedIndex === 0) {
+      // Run all migrations
+      Meteor.call('cron.startAllMigrations', (error, result) => {
+        this.setLoading(false);
+        if (error) {
+          alert(TAPi18n.__('migration-start-failed') + ': ' + error.reason);
+        } else {
+          alert(TAPi18n.__('migration-started'));
+        }
+      });
+    } else {
+      // Run specific migration
+      Meteor.call('cron.startSpecificMigration', selectedIndex - 1, (error, result) => {
+        this.setLoading(false);
+        if (error) {
+          alert(TAPi18n.__('migration-start-failed') + ': ' + error.reason);
+        } else {
+          alert(TAPi18n.__('migration-started'));
+        }
+      });
+    }
+  },
+
+  'click button.js-pause-migration'(event) {
+    event.preventDefault();
+    this.setLoading(true);
+    Meteor.call('cron.pauseAllMigrations', (error, result) => {
+      this.setLoading(false);
+      if (error) {
+        alert(TAPi18n.__('migration-pause-failed') + ': ' + error.reason);
+      } else {
+        alert(TAPi18n.__('migration-paused'));
+      }
+    });
+  },
+
+  'click button.js-stop-migration'(event) {
+    event.preventDefault();
+    if (confirm(TAPi18n.__('migration-stop-confirm'))) {
+      this.setLoading(true);
+      Meteor.call('cron.stopAllMigrations', (error, result) => {
+        this.setLoading(false);
+        if (error) {
+          alert(TAPi18n.__('migration-stop-failed') + ': ' + error.reason);
+        } else {
+          alert(TAPi18n.__('migration-stopped'));
+        }
+      });
+    }
+  },
+
+  'click button.js-schedule-board-cleanup'(event) {
+    event.preventDefault();
+    // Placeholder - board cleanup scheduling
+    alert(TAPi18n.__('board-cleanup-scheduled'));
+  },
+
+  'click button.js-schedule-board-archive'(event) {
+    event.preventDefault();
+    // Placeholder - board archive scheduling
+    alert(TAPi18n.__('board-archive-scheduled'));
+  },
+
+  'click button.js-schedule-board-backup'(event) {
+    event.preventDefault();
+    // Placeholder - board backup scheduling
+    alert(TAPi18n.__('board-backup-scheduled'));
+  },
+
+  'click button.js-pause-job'(event) {
+    event.preventDefault();
+    const jobId = $(event.target).data('job-id');
+    this.setLoading(true);
+    Meteor.call('cron.pauseJob', jobId, (error, result) => {
+      this.setLoading(false);
+      if (error) {
+        alert(TAPi18n.__('cron-job-pause-failed') + ': ' + error.reason);
+      } else {
+        alert(TAPi18n.__('cron-job-paused'));
+      }
+    });
+  },
+
+  'click button.js-delete-job'(event) {
+    event.preventDefault();
+    const jobId = $(event.target).data('job-id');
+    if (confirm(TAPi18n.__('cron-job-delete-confirm'))) {
+      this.setLoading(true);
+      Meteor.call('cron.removeJob', jobId, (error, result) => {
+        this.setLoading(false);
+        if (error) {
+          alert(TAPi18n.__('cron-job-delete-failed') + ': ' + error.reason);
+        } else {
+          alert(TAPi18n.__('cron-job-deleted'));
+        }
+      });
+    }
+  },
+
+  'click button.js-add-cron-job'(event) {
+    event.preventDefault();
+    // Placeholder for adding a new cron job (e.g., open a modal)
+    alert(TAPi18n.__('add-cron-job-placeholder'));
   },
 
   checkField(selector) {
@@ -89,8 +405,23 @@ BlazeComponent.extendComponent({
   toggleHideBoardMemberList() {
     $('#hide-board-member-list').toggleClass('is-checked');
   },
+  toggleAccessibilityPageEnabled() {
+    $('#accessibility-page-enabled').toggleClass('is-checked');
+  },
   toggleDisplayAuthenticationMethod() {
     $('#display-authentication-method').toggleClass('is-checked');
+  },
+
+  initializeAttachmentSubMenu() {
+    // Set default sub-menu state for attachment settings
+    // This will be handled by the attachment settings component
+    console.log('Initializing attachment sub-menu');
+  },
+
+  initializeCronSubMenu() {
+    // Set default sub-menu state for cron settings
+    // This will be handled by the cron settings template
+    console.log('Initializing cron sub-menu');
   },
   switchMenu(event) {
     const target = $(event.target);
@@ -98,14 +429,44 @@ BlazeComponent.extendComponent({
       $('.side-menu li.active').removeClass('active');
       target.parent().addClass('active');
       const targetID = target.data('id');
-      this.forgotPasswordSetting.set('forgot-password-setting' === targetID);
-      this.generalSetting.set('registration-setting' === targetID);
-      this.emailSetting.set('email-setting' === targetID);
-      this.accountSetting.set('account-setting' === targetID);
-      this.announcementSetting.set('announcement-setting' === targetID);
-      this.layoutSetting.set('layout-setting' === targetID);
-      this.webhookSetting.set('webhook-setting' === targetID);
-      this.tableVisibilityModeSetting.set('tableVisibilityMode-setting' === targetID);
+      
+      // Reset all settings to false
+      this.forgotPasswordSetting.set(false);
+      this.generalSetting.set(false);
+      this.emailSetting.set(false);
+      this.accountSetting.set(false);
+      this.tableVisibilityModeSetting.set(false);
+      this.announcementSetting.set(false);
+      this.accessibilitySetting.set(false);
+      this.layoutSetting.set(false);
+      this.webhookSetting.set(false);
+      this.attachmentSettings.set(false);
+      this.cronSettings.set(false);
+      
+      // Set the selected setting to true
+      if (targetID === 'registration-setting') {
+        this.generalSetting.set(true);
+      } else if (targetID === 'email-setting') {
+        this.emailSetting.set(true);
+      } else if (targetID === 'account-setting') {
+        this.accountSetting.set(true);
+      } else if (targetID === 'tableVisibilityMode-setting') {
+        this.tableVisibilityModeSetting.set(true);
+      } else if (targetID === 'announcement-setting') {
+        this.announcementSetting.set(true);
+      } else if (targetID === 'accessibility-setting') {
+        this.accessibilitySetting.set(true);
+      } else if (targetID === 'layout-setting') {
+        this.layoutSetting.set(true);
+      } else if (targetID === 'webhook-setting') {
+        this.webhookSetting.set(true);
+      } else if (targetID === 'attachment-settings') {
+        this.attachmentSettings.set(true);
+        this.initializeAttachmentSubMenu();
+      } else if (targetID === 'cron-settings') {
+        this.cronSettings.set(true);
+        this.initializeCronSubMenu();
+      }
     }
   },
 
@@ -184,63 +545,26 @@ BlazeComponent.extendComponent({
     this.setLoading(true);
     $('li').removeClass('has-error');
 
-    const productName = $('#product-name')
-      .val()
-      .trim();
-    const customLoginLogoImageUrl = $('#custom-login-logo-image-url')
-      .val()
-      .trim();
-    const customLoginLogoLinkUrl = $('#custom-login-logo-link-url')
-      .val()
-      .trim();
-    const customHelpLinkUrl = $('#custom-help-link-url')
-      .val()
-      .trim();
-    const textBelowCustomLoginLogo = $('#text-below-custom-login-logo')
-      .val()
-      .trim();
-    const automaticLinkedUrlSchemes = $('#automatic-linked-url-schemes')
-      .val()
-      .trim();
-    const customTopLeftCornerLogoImageUrl = $(
-      '#custom-top-left-corner-logo-image-url',
-    )
-      .val()
-      .trim();
-    const customTopLeftCornerLogoLinkUrl = $(
-      '#custom-top-left-corner-logo-link-url',
-    )
-      .val()
-      .trim();
-    const customTopLeftCornerLogoHeight = $(
-      '#custom-top-left-corner-logo-height',
-    )
-      .val()
-      .trim();
+    const productName = ($('#product-name').val() || '').trim();
+    const customLoginLogoImageUrl = ($('#custom-login-logo-image-url').val() || '').trim();
+    const customLoginLogoLinkUrl = ($('#custom-login-logo-link-url').val() || '').trim();
+    const customHelpLinkUrl = ($('#custom-help-link-url').val() || '').trim();
+    const textBelowCustomLoginLogo = ($('#text-below-custom-login-logo').val() || '').trim();
+    const automaticLinkedUrlSchemes = ($('#automatic-linked-url-schemes').val() || '').trim();
+    const customTopLeftCornerLogoImageUrl = ($('#custom-top-left-corner-logo-image-url').val() || '').trim();
+    const customTopLeftCornerLogoLinkUrl = ($('#custom-top-left-corner-logo-link-url').val() || '').trim();
+    const customTopLeftCornerLogoHeight = ($('#custom-top-left-corner-logo-height').val() || '').trim();
 
-    const oidcBtnText = $(
-      '#oidcBtnTextvalue',
-    )
-      .val()
-      .trim();
-    const mailDomainName = $(
-      '#mailDomainNamevalue',
-    )
-      .val()
-      .trim();
-    const legalNotice = $(
-      '#legalNoticevalue',
-    )
-      .val()
-      .trim();
+    const oidcBtnText = ($('#oidcBtnTextvalue').val() || '').trim();
+    const mailDomainName = ($('#mailDomainNamevalue').val() || '').trim();
+    const legalNotice = ($('#legalNoticevalue').val() || '').trim();
     const hideLogoChange = $('input[name=hideLogo]:checked').val() === 'true';
     const hideCardCounterListChange = $('input[name=hideCardCounterList]:checked').val() === 'true';
     const hideBoardMemberListChange = $('input[name=hideBoardMemberList]:checked').val() === 'true';
     const displayAuthenticationMethod =
       $('input[name=displayAuthenticationMethod]:checked').val() === 'true';
     const defaultAuthenticationMethod = $('#defaultAuthenticationMethod').val();
-
-    const spinnerName = $('#spinnerName').val();
+    const spinnerName = ($('#spinnerName').val() || '').trim();
 
     try {
       Settings.update(ReactiveCache.getCurrentSetting()._id, {
@@ -271,7 +595,46 @@ BlazeComponent.extendComponent({
       this.setLoading(false);
     }
 
-    DocHead.setTitle(productName);
+    document.title = productName;
+  },
+
+  toggleSupportPage() {
+    this.setLoading(true);
+    const supportPageEnabled = !$('.js-toggle-support .materialCheckBox').hasClass('is-checked');
+    $('.js-toggle-support .materialCheckBox').toggleClass('is-checked');
+    $('.support-content').toggleClass('hide');
+    Settings.update(Settings.findOne()._id, {
+      $set: { supportPageEnabled },
+    });
+    this.setLoading(false);
+  },
+
+  toggleSupportPublic() {
+    this.setLoading(true);
+    const supportPagePublic = !$('.js-toggle-support-public .materialCheckBox').hasClass('is-checked');
+    $('.js-toggle-support-public .materialCheckBox').toggleClass('is-checked');
+    Settings.update(Settings.findOne()._id, {
+      $set: { supportPagePublic },
+    });
+    this.setLoading(false);
+  },
+
+  saveSupportSettings() {
+    this.setLoading(true);
+    const supportTitle = ($('#support-title').val() || '').trim();
+    const supportPageText = ($('#support-page-text').val() || '').trim();
+    try {
+      Settings.update(Settings.findOne()._id, {
+        $set: {
+          supportTitle,
+          supportPageText,
+        },
+      });
+    } catch (e) {
+      return;
+    } finally {
+      this.setLoading(false);
+    }
   },
 
   sendSMTPTestEmail() {
@@ -302,6 +665,9 @@ BlazeComponent.extendComponent({
         'click a.js-toggle-hide-card-counter-list': this.toggleHideCardCounterList,
         'click a.js-toggle-hide-board-member-list': this.toggleHideBoardMemberList,
         'click button.js-save-layout': this.saveLayout,
+        'click a.js-toggle-support': this.toggleSupportPage,
+        'click a.js-toggle-support-public': this.toggleSupportPublic,
+        'click button.js-support-save': this.saveSupportSettings,
         'click a.js-toggle-display-authentication-method': this
           .toggleDisplayAuthenticationMethod,
       },
@@ -327,21 +693,29 @@ BlazeComponent.extendComponent({
       $set: { booleanValue: allowUserDelete },
     });
   },
+
+  // Brute force lockout settings method moved to lockedUsersBody.js
+
   allowEmailChange() {
-    return AccountSettings.findOne('accounts-allowEmailChange').booleanValue;
+    return AccountSettings.findOne('accounts-allowEmailChange')?.booleanValue || false;
   },
+
   allowUserNameChange() {
-    return AccountSettings.findOne('accounts-allowUserNameChange').booleanValue;
+    return AccountSettings.findOne('accounts-allowUserNameChange')?.booleanValue || false;
   },
+
   allowUserDelete() {
-    return AccountSettings.findOne('accounts-allowUserDelete').booleanValue;
+    return AccountSettings.findOne('accounts-allowUserDelete')?.booleanValue || false;
   },
-  allHideSystemMessages() {
-    Meteor.call('setAllUsersHideSystemMessages', (err, ret) => {
+
+  // Lockout settings helper methods moved to lockedUsersBody.js
+
+  allBoardsHideActivities() {
+    Meteor.call('setAllBoardsHideActivities', (err, ret) => {
       if (!err && ret) {
         if (ret === true) {
           const message = `${TAPi18n.__(
-            'now-system-messages-of-all-users-are-hidden',
+            'now-activities-of-all-boards-are-hidden',
           )}`;
           alert(message);
         }
@@ -359,7 +733,7 @@ BlazeComponent.extendComponent({
         'click button.js-accounts-save': this.saveAccountsChange,
       },
       {
-        'click button.js-all-hide-system-messages': this.allHideSystemMessages,
+        'click button.js-all-boards-hide-activities': this.allBoardsHideActivities,
       },
     ];
   },
@@ -376,12 +750,12 @@ BlazeComponent.extendComponent({
   allowPrivateOnly() {
     return TableVisibilityModeSettings.findOne('tableVisibilityMode-allowPrivateOnly').booleanValue;
   },
-  allHideSystemMessages() {
-    Meteor.call('setAllUsersHideSystemMessages', (err, ret) => {
+  allBoardsHideActivities() {
+    Meteor.call('setAllBoardsHideActivities', (err, ret) => {
       if (!err && ret) {
         if (ret === true) {
           const message = `${TAPi18n.__(
-            'now-system-messages-of-all-users-are-hidden',
+            'now-activities-of-all-boards-are-hidden',
           )}`;
           alert(message);
         }
@@ -399,7 +773,7 @@ BlazeComponent.extendComponent({
         'click button.js-tableVisibilityMode-save': this.saveTableVisibilityChange,
       },
       {
-        'click button.js-all-hide-system-messages': this.allHideSystemMessages,
+        'click button.js-all-boards-hide-activities': this.allBoardsHideActivities,
       },
     ];
   },
@@ -452,6 +826,68 @@ BlazeComponent.extendComponent({
   },
 }).register('announcementSettings');
 
+BlazeComponent.extendComponent({
+  onCreated() {
+    this.loading = new ReactiveVar(false);
+  },
+
+  setLoading(w) {
+    this.loading.set(w);
+  },
+
+  currentAccessibility() {
+    return AccessibilitySettings.findOne();
+  },
+
+  saveAccessibility() {
+    this.setLoading(true);
+    const title = $('#admin-accessibility-title')
+      .val()
+      .trim();
+    const content = $('#admin-accessibility-content')
+      .val()
+      .trim();
+    
+    try {
+      AccessibilitySettings.update(AccessibilitySettings.findOne()._id, {
+        $set: {
+          title: title,
+          body: content
+        },
+      });
+    } catch (e) {
+      console.error('Error saving accessibility settings:', e);
+      return;
+    } finally {
+      this.setLoading(false);
+    }
+  },
+
+  toggleAccessibility() {
+    this.setLoading(true);
+    const accessibilitySetting = this.currentAccessibility();
+    const isActive = accessibilitySetting.enabled;
+    AccessibilitySettings.update(accessibilitySetting._id, {
+      $set: { enabled: !isActive },
+    });
+    this.setLoading(false);
+    if (isActive) {
+      $('.accessibility-content').slideUp();
+    } else {
+      $('.accessibility-content').slideDown();
+    }
+  },
+
+  events() {
+    return [
+      {
+        'click a.js-toggle-accessibility': this.toggleAccessibility,
+        'click button.js-accessibility-save': this.saveAccessibility,
+      },
+    ];
+  },
+}).register('accessibilitySettings');
+
 Template.selectAuthenticationMethod.onCreated(function() {
   this.authenticationMethods = new ReactiveVar([]);
 
@@ -487,3 +923,4 @@ Template.selectSpinnerName.helpers({
     return Template.instance().data.spinnerName === match;
   },
 });
+

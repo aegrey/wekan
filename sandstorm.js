@@ -1,6 +1,7 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { Meteor } from 'meteor/meteor';
 import { Picker } from 'meteor/communitypackages:picker';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 
 // Sandstorm context is detected using the METEOR_SETTINGS environment variable
 // in the package definition.
@@ -359,9 +360,12 @@ if (isSandstorm && Meteor.isServer) {
   // Meteor application. We need to enforce “public” visibility as the sharing
   // is now handled by Sandstorm.
   // See https://github.com/wekan/wekan/issues/346
+  // Migration disabled - using backward compatibility approach
+  /*
   Migrations.add('enforce-public-visibility-for-sandstorm', () => {
     Boards.update('sandstorm', { $set: { permission: 'public' } });
   });
+  */
 
   // Monkey patch to work around the problem described in
   // https://github.com/sandstorm-io/meteor-accounts-sandstorm/pull/31
@@ -475,7 +479,7 @@ if (isSandstorm && Meteor.isClient) {
   ]);
 
   Tracker.autorun(() => {
-    updateSandstormMetaData({ setTitle: DocHead.getTitle() });
+    updateSandstormMetaData({ setTitle: document.title });
   });
 
   // Runtime redirection from the home page to the unique board -- since the

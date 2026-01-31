@@ -4,7 +4,17 @@ var converter = require('@wekanteam/html-to-markdown');
 
 const specialHandles = [
   {userId: 'board_members', username: 'board_members'},
-  {userId: 'card_members', username: 'card_members'}
+  {userId: 'card_members', username: 'card_members'},
+  {userId: 'board_assignees', username: 'board_assignees'},
+  {userId: 'card_assignees', username: 'card_assignees'}
+];
+const cardSpecialHandles = [
+  {userId: 'card_members', username: 'card_members'},
+  {userId: 'card_assignees', username: 'card_assignees'}
+];
+const boardSpecialHandles = [
+  {userId: 'board_members', username: 'board_members'},
+  {userId: 'board_assignees', username: 'board_assignees'}
 ];
 const specialHandleNames = specialHandles.map(m => m.username);
 
@@ -45,22 +55,26 @@ BlazeComponent.extendComponent({
         match: /\B@([\w.-]*)$/,
         search(term, callback) {
           const currentBoard = Utils.getCurrentBoard();
-          callback(
-            _.union(
-            currentBoard
-              .activeMembers()
-              .map(member => {
-                const user = ReactiveCache.getUser(member.userId);
-                const username = user.username;
-                const fullName = user.profile && user.profile !== undefined && user.profile.fullname ? user.profile.fullname : "";
-                return username.includes(term) || fullName.includes(term) ? user : null;
-              })
-              .filter(Boolean), [...specialHandles])
-          );
+          const searchTerm = term.toLowerCase();
+          const users = currentBoard
+            .activeMembers()
+            .map(member => {
+              const user = ReactiveCache.getUser(member.userId);
+              const username = user.username.toLowerCase();
+              const fullName = user.profile && user.profile !== undefined && user.profile.fullname ? user.profile.fullname.toLowerCase() : "";
+              return username.includes(searchTerm) || fullName.includes(searchTerm) ? user : null;
+            })
+            .filter(Boolean);
+          // Order: 1. Users, 2. Card-specific options, 3. Board-wide options
+          callback(_.union(users, cardSpecialHandles, boardSpecialHandles));
         },
         template(user) {
           if (user.profile && user.profile.fullname) {
             return (user.profile.fullname + " (" + user.username + ")");
+          }
+          // Translate special group mentions
+          if (specialHandleNames.includes(user.username)) {
+            return TAPi18n.__(user.username);
           }
           return user.username;
         },
@@ -79,7 +93,6 @@ BlazeComponent.extendComponent({
       autosize($textarea);
       $textarea.escapeableTextComplete(mentions);
     };
-/*
     if (Meteor.settings.public.RICHER_CARD_COMMENT_EDITOR === true || Meteor.settings.public.RICHER_CARD_COMMENT_EDITOR === 'true') {
       const isSmall = Utils.isMiniScreen();
       const toolbar = isSmall
@@ -117,7 +130,7 @@ BlazeComponent.extendComponent({
         ].join('|');
         const badPatterns = new RegExp(
           `(?:${[
-            `<(${badTags})s*[^>][\\s\\S]*?<\\/\\1>`,
+            `<(${badTags})\\s*[^>][\\s\\S]*?<\\/\\1>`,
             `<(${badTags})[^>]*?\\/>`,
           ].join('|')})`,
           'gi',
@@ -128,9 +141,9 @@ BlazeComponent.extendComponent({
         // remove attributes ' style="..."'
         const badAttributes = new RegExp(
           `(?:${[
-            'on\\S+=([\'"]?).*?\\1',
-            'href=([\'"]?)javascript:.*?\\2',
-            'style=([\'"]?).*?\\3',
+            'on\\S+=([\'\"]?).*?\\1',
+            'href=([\'\"]?)javascript:.*?\\2',
+            'style=([\'\"]?).*?\\3',
             'target=\\S+',
           ].join('|')})`,
           'gi',
@@ -300,7 +313,6 @@ BlazeComponent.extendComponent({
     } else {
       enableTextarea();
     }
-*/
     enableTextarea();
   },
   events() {
@@ -327,6 +339,7 @@ BlazeComponent.extendComponent({
 }).register('editor');
 
 import DOMPurify from 'dompurify';
+import { sanitizeHTML } from '/imports/lib/secureDOMPurify';
 
 // Additional  safeAttrValue function to allow for other specific protocols
 // See https://github.com/leizongmin/js-xss/issues/52#issuecomment-241354114
@@ -373,9 +386,7 @@ Blaze.Template.registerHelper(
     let content = Blaze.toHTML(view.templateContentBlock);
     const currentBoard = Utils.getCurrentBoard();
     if (!currentBoard)
-      return HTML.Raw(
-        DOMPurify.sanitize(content, { ALLOW_UNKNOWN_PROTOCOLS: true }),
-      );
+      return HTML.Raw(sanitizeHTML(content));
     const knowedUsers = _.union(currentBoard.members.map(member => {
       const u = ReactiveCache.getUser(member.userId);
       if (u) {
@@ -399,6 +410,14 @@ Blaze.Template.registerHelper(
       if (knowedUser.userId === Meteor.userId()) {
         linkClass += ' me';
       }
+      
+      // For special group mentions, display translated text
+      let displayText = knowedUser.username;
+      if (specialHandleNames.includes(knowedUser.username)) {
+        displayText = TAPi18n.__(knowedUser.username);
+        linkClass = 'atMention'; // Remove js-open-member for special handles
+      }
+      
       // This @user mention link generation did open same Wekan
       // window in new tab, so now A is changed to U so it's
       // underlined and there is no link popup. This way also
@@ -413,15 +432,13 @@ Blaze.Template.registerHelper(
           // using a data attribute.
           'data-userId': knowedUser.userId,
         },
-        linkValue,
+        [' ', at, displayText],
       );
 
       content = content.replace(fullMention, Blaze.toHTML(link));
     }
 
-    return HTML.Raw(
-      DOMPurify.sanitize(content, { ALLOW_UNKNOWN_PROTOCOLS: true }),
-    );
+    return HTML.Raw(sanitizeHTML(content));
   }),
 );
 

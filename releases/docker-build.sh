@@ -1,10 +1,23 @@
 #!/bin/bash
 
-# Build Docker images locally, because builds at Quay.io and Docker Hub usually fail.
-#
-# To be done at ~/repos/wekan or ~/repos/w/wekan-gantt-gpl
-#
-# After building, you see created Docker image ID, that is then
-# used with releases/docker-push-...sh scripts.
+if [ $# -ne 1 ]
+  then
+    echo "Syntax with Wekan version number:"
+    echo "  ./releases/docker-build.sh 8.24"
+    exit 1
+fi
 
-docker build .
+VERSION=$1
+
+# Ensure you are using the correct builder
+docker buildx use mybuilder
+
+docker buildx build \
+  --platform linux/amd64,linux/arm64,linux/s390x \
+  -t wekanteam/wekan:v${VERSION} \
+  -t wekanteam/wekan:latest \
+  -t quay.io/wekan/wekan:v${VERSION} \
+  -t quay.io/wekan/wekan:latest \
+  -t ghcr.io/wekan/wekan:v${VERSION} \
+  -t ghcr.io/wekan/wekan:latest \
+  --push .

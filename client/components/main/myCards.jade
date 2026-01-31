@@ -10,10 +10,10 @@ template(name="myCardsHeaderBar")
       a.board-header-btn.js-my-cards-view-change(title="{{_ 'myCardsViewChange-title'}}")
         i.fa.fa-caret-down
         if $eq myCardsView 'boards'
-          i.fa.fa-trello
+          i.fa.fa-list
           | {{_ 'myCardsViewChange-choice-boards'}}
         if $eq myCardsView 'table'
-          i.fa.fa-table
+          i.fa.fa-bar-chart
           | {{_ 'myCardsViewChange-choice-table'}}
 
 template(name="myCardsModalTitle")
@@ -102,7 +102,7 @@ template(name="myCardsViewChangePopup")
       li
         with "myCardsViewChange-choice-boards"
           a.js-my-cards-view-boards
-            i.fa.fa-trello.colorful
+            i.fa.fa-list
             | {{_ 'myCardsViewChange-choice-boards'}}
             if $eq Utils.myCardsView "boards"
               i.fa.fa-check
@@ -110,7 +110,7 @@ template(name="myCardsViewChangePopup")
       li
         with "myCardsViewChange-choice-table"
           a.js-my-cards-view-table
-            i.fa.fa-table.colorful
+            i.fa.fa-bar-chart
             | {{_ 'myCardsViewChange-choice-table'}}
             if $eq Utils.myCardsView "table"
               i.fa.fa-check

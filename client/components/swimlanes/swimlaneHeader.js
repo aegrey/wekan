@@ -8,22 +8,37 @@ Meteor.startup(() => {
 });
 
 BlazeComponent.extendComponent({
-  editTitle(event) {
+  async editTitle(event) {
     event.preventDefault();
     const newTitle = this.childComponents('inlinedForm')[0]
       .getValue()
       .trim();
     const swimlane = this.currentData();
     if (newTitle) {
-      swimlane.rename(newTitle.trim());
+      await swimlane.rename(newTitle.trim());
+    }
+  },
+  collapsed(check = undefined) {
+    const swimlane = Template.currentData();
+    const status = Utils.getSwimlaneCollapseState(swimlane);
+    if (check === undefined) {
+      // just check
+      return status;
+    } else {
+      const next = typeof check === 'boolean' ? check : !status;
+      Utils.setSwimlaneCollapseState(swimlane, next);
+      return next;
     }
   },
 
   events() {
     return [
       {
+        'click .js-collapse-swimlane'(event) {
+          event.preventDefault();
+          this.collapsed(!this.collapsed());
+        },
         'click .js-open-swimlane-menu': Popup.open('swimlaneAction'),
-        'click .js-open-add-swimlane-menu': Popup.open('swimlaneAdd'),
         submit: this.editTitle,
       },
     ];
@@ -33,6 +48,10 @@ BlazeComponent.extendComponent({
 Template.swimlaneFixedHeader.helpers({
   isBoardAdmin() {
     return ReactiveCache.getCurrentUser().isBoardAdmin();
+  },
+  collapseSwimlane() {
+    const swimlane = Template.currentData();
+    return Utils.getSwimlaneCollapseState(swimlane);
   },
   isTitleDefault(title) {
     // https://github.com/wekan/wekan/issues/4763
@@ -84,11 +103,13 @@ Template.editSwimlaneTitleForm.helpers({
 });
 
 Template.swimlaneActionPopup.events({
+  'click .js-add-swimlane': Popup.open('swimlaneAdd'),
+  'click .js-add-list-from-swimlane': Popup.open('addList'),
   'click .js-set-swimlane-color': Popup.open('setSwimlaneColor'),
   'click .js-set-swimlane-height': Popup.open('setSwimlaneHeight'),
-  'click .js-close-swimlane'(event) {
+  async 'click .js-close-swimlane'(event) {
     event.preventDefault();
-    this.archive();
+    await this.archive();
     Popup.back();
   },
   'click .js-move-swimlane': Popup.open('moveSwimlane'),
@@ -128,7 +149,7 @@ BlazeComponent.extendComponent({
             Swimlanes.insert({
               title,
               boardId: Session.get('currentBoard'),
-              sort: sortValue.base,
+              sort: sortValue.base || 0,
               type: swimlaneType,
             });
 
@@ -163,15 +184,20 @@ BlazeComponent.extendComponent({
   events() {
     return [
       {
+        async 'submit form'(event) {
+          event.preventDefault();
+          await this.currentSwimlane.setColor(this.currentColor.get());
+          Popup.back();
+        },
         'click .js-palette-color'() {
           this.currentColor.set(this.currentData().color);
         },
-        'click .js-submit'() {
-          this.currentSwimlane.setColor(this.currentColor.get());
+        async 'click .js-submit'() {
+          await this.currentSwimlane.setColor(this.currentColor.get());
           Popup.back();
         },
-        'click .js-remove-color'() {
-          this.currentSwimlane.setColor(null);
+        async 'click .js-remove-color'() {
+          await this.currentSwimlane.setColor(null);
           Popup.back();
         },
       },
@@ -209,7 +235,7 @@ BlazeComponent.extendComponent({
   swimlaneHeightValue() {
     const swimlane = this.currentData();
     const board = swimlane.boardId;
-    return Meteor.user().getSwimlaneHeight(board, swimlane._id);
+    return ReactiveCache.getCurrentUser().getSwimlaneHeight(board, swimlane._id);
   },
 
   events() {

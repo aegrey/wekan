@@ -1,6 +1,8 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { TAPi18n } from '/imports/i18n';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 import { Spinner } from '/client/lib/spinner';
+import getSlug from 'limax';
 
 const subManager = new SubsManager();
 const InfiniteScrollIter = 10;
@@ -16,11 +18,50 @@ BlazeComponent.extendComponent({
   },
 
   customFieldsSum() {
-    const ret = ReactiveCache.getCustomFields({
-      boardIds: { $in: [Session.get('currentBoard')] },
+    const list = Template.currentData();
+    if (!list) return [];
+    const boardId = Session.get('currentBoard');
+    const fields = ReactiveCache.getCustomFields({
+      boardIds: { $in: [boardId] },
       showSumAtTopOfList: true,
     });
-    return ret;
+
+    if (!fields || !fields.length) return [];
+
+    const cards = ReactiveCache.getCards({
+      listId: list._id,
+      archived: false,
+    });
+
+    const result = fields.map(field => {
+      let sum = 0;
+      if (cards && cards.length) {
+        cards.forEach(card => {
+          const cfs = (card.customFields || []);
+          const cf = cfs.find(f => f && f._id === field._id);
+          if (!cf || cf.value === null || cf.value === undefined) return;
+          let v = cf.value;
+          if (typeof v === 'string') {
+            // try to parse string numbers, accept comma decimal
+            const parsed = parseFloat(v.replace(',', '.'));
+            if (isNaN(parsed)) return;
+            v = parsed;
+          }
+          if (typeof v === 'number' && isFinite(v)) {
+            sum += v;
+          }
+        });
+      }
+      return {
+        _id: field._id,
+        name: field.name,
+        type: field.type,
+        settings: field.settings || {},
+        value: sum,
+      };
+    });
+
+    return result;
   },
 
   openForm(options) {
@@ -169,6 +210,12 @@ BlazeComponent.extendComponent({
       evt.stopImmediatePropagation();
       evt.preventDefault();
       Utils.goBoardId(Session.get('currentBoard'));
+    } else {
+      // Allow normal href navigation, but if it's the same card URL,
+      // we'll handle it by directly setting the session
+      evt.preventDefault();
+      const card = this.currentData();
+      Session.set('currentCard', card._id);
     }
   },
 
@@ -231,6 +278,11 @@ BlazeComponent.extendComponent({
     );
   },
 
+  isVerticalScrollbars() {
+    const user = ReactiveCache.getCurrentUser();
+    return user && user.isVerticalScrollbars();
+  },
+
   cardDetailsPopup(event) {
     if (!Popup.isOpen()) {
       Popup.open("cardDetails")(event);
@@ -248,6 +300,22 @@ BlazeComponent.extendComponent({
     ];
   },
 }).register('listBody');
+
+// Helpers for listBody template context
+Template.listBody.helpers({
+  formattedCurrencyCustomFieldValue(val) {
+    // `this` is the custom field sum object from customFieldsSum each-iteration
+    const field = this || {};
+    const code = (field.settings && field.settings.currencyCode) || 'USD';
+    try {
+      const n = typeof val === 'number' ? val : parseFloat(val);
+      if (!isFinite(n)) return val;
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: code }).format(n);
+    } catch (e) {
+      return `${code} ${val}`;
+    }
+  },
+});
 
 function toggleValueInReactiveArray(reactiveValue, value) {
   const array = reactiveValue.get();
@@ -309,7 +377,8 @@ BlazeComponent.extendComponent({
       // Pressing Tab should open the form of the next column, and Maj+Tab go
       // in the reverse order
     } else if (evt.keyCode === 9) {
-      evt.preventDefault();
+      // Prevent custom focus movement on Tab key for accessibility
+      // evt.preventDefault();
       const isReverse = evt.shiftKey;
       const list = $(`#js-list-${this.data().listId}`);
       const listSelector = '.js-list:not(.js-list-composer)';
@@ -408,13 +477,16 @@ BlazeComponent.extendComponent({
         // or `Enter` to validation the auto-completion. We also need to stop the
         // event propagation to prevent the card from submitting (on `Enter`) or
         // going on the next column (on `Tab`).
+        /*
         onKeydown(evt, commands) {
-          if (evt.keyCode === 9 || evt.keyCode === 13) {
-            evt.stopPropagation();
-            return commands.KEY_ENTER;
-          }
+          // Prevent custom focus movement on Tab key for accessibility
+          // if (evt.keyCode === 9 || evt.keyCode === 13) {
+          //  evt.stopPropagation();
+          //  return commands.KEY_ENTER;
+          //}
           return null;
         },
+        */
       },
     );
   },
@@ -463,6 +535,14 @@ BlazeComponent.extendComponent({
     if (!this.selectedBoardId.get()) {
       return [];
     }
+    const board = ReactiveCache.getBoard(this.selectedBoardId.get());
+    if (!board) {
+      return [];
+    }
+    
+    // Ensure default swimlane exists
+    board.getDefaultSwimline();
+    
     const swimlanes = ReactiveCache.getSwimlanes(
     {
       boardId: this.selectedBoardId.get()
@@ -470,8 +550,6 @@ BlazeComponent.extendComponent({
     {
       sort: { sort: 1 },
     });
-    if (swimlanes.length)
-      this.selectedSwimlaneId.set(swimlanes[0]._id);
     return swimlanes;
   },
 
@@ -486,7 +564,6 @@ BlazeComponent.extendComponent({
     {
       sort: { sort: 1 },
     });
-    if (lists.length) this.selectedListId.set(lists[0]._id);
     return lists;
   },
 
@@ -495,19 +572,17 @@ BlazeComponent.extendComponent({
       return [];
     }
     const ownCardsIds = this.board.cards().map(card => card.getRealId());
-    const ret = ReactiveCache.getCards(
-    {
-      boardId: this.selectedBoardId.get(),
-      swimlaneId: this.selectedSwimlaneId.get(),
-      listId: this.selectedListId.get(),
+    const selector = {
       archived: false,
       linkedId: { $nin: ownCardsIds },
       _id: { $nin: ownCardsIds },
       type: { $nin: ['template-card'] },
-    },
-    {
-      sort: { sort: 1 },
-    });
+    };
+    if (this.selectedBoardId.get()) selector.boardId = this.selectedBoardId.get();
+    if (this.selectedSwimlaneId.get()) selector.swimlaneId = this.selectedSwimlaneId.get();
+    if (this.selectedListId.get()) selector.listId = this.selectedListId.get();
+
+    const ret = ReactiveCache.getCards(selector, { sort: { sort: 1 } });
     return ret;
   },
 
@@ -528,8 +603,12 @@ BlazeComponent.extendComponent({
     return [
       {
         'change .js-select-boards'(evt) {
-          subManager.subscribe('board', $(evt.currentTarget).val(), false);
-          this.selectedBoardId.set($(evt.currentTarget).val());
+          const val = $(evt.currentTarget).val();
+          subManager.subscribe('board', val, false);
+          // Clear selections to allow linking only board or re-choose swimlane/list
+          this.selectedSwimlaneId.set('');
+          this.selectedListId.set('');
+          this.selectedBoardId.set(val);
         },
         'change .js-select-swimlanes'(evt) {
           this.selectedSwimlaneId.set($(evt.currentTarget).val());

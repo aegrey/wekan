@@ -1,22 +1,17 @@
 template(name="swimlane")
-  .swimlane
+  .swimlane.nodragscroll
     +swimlaneHeader
   unless collapseSwimlane
-    .swimlane.js-lists.js-swimlane(id="swimlane-{{_id}}"
+    .swimlane.js-lists.js-swimlane.dragscroll(id="swimlane-{{_id}}"
                                    style="height:{{swimlaneHeight}};")
+      .swimlane-resize-handle.js-swimlane-resize-handle.nodragscroll
       if isMiniScreen
         if currentListIsInThisSwimlane _id
           +list(currentList)
         unless currentList
-          if currentUser.isBoardMember
-            unless currentUser.isCommentOnly
-              +addListForm
           each lists
             +miniList(this)
       else
-        if currentUser.isBoardMember
-          unless currentUser.isCommentOnly
-            +addListForm
         each lists
           if visible this
             +list(this)
@@ -24,20 +19,14 @@ template(name="swimlane")
             +cardDetails(currentCard)
 
 template(name="listsGroup")
-  .swimlane.list-group.js-lists
+  .swimlane.list-group.js-lists.dragscroll
     if isMiniScreen
       if currentList
         +list(currentList)
       else
-        if currentUser.isBoardMember
-          unless currentUser.isCommentOnly
-            +addListForm
         each lists
           +miniList(this)
     else
-      if currentUser.isBoardMember
-        unless currentUser.isCommentOnly
-          +addListForm
       each lists
         if visible this
           +list(this)
@@ -46,8 +35,10 @@ template(name="listsGroup")
 
 template(name="addListForm")
   unless currentUser.isWorker
-    .list.list-composer.js-list-composer(class="{{#if isMiniScreen}}mini-list{{/if}}")
-      if currentUser.isBoardAdmin
+    unless currentUser.isCommentOnly
+      unless currentUser.isReadOnly
+        unless currentUser.isReadAssignedOnly
+          .list.list-composer.js-list-composer(class="{{#if isMiniScreen}}mini-list{{/if}}")
         .list-header-add
           +inlinedForm(autoclose=false)
             input.list-name-input.full-line(type="text" placeholder="{{_ 'add-list'}}"
@@ -59,7 +50,8 @@ template(name="addListForm")
                   option(value="{{_id}}" selected=currentBoard.getLastList.title) {{title}}
             .edit-controls.clearfix
               button.primary.confirm(type="submit") {{_ 'save'}}
-              .fa.fa-times-thin.js-close-inlined-form
+              .js-close-inlined-form
+                i.fa.fa-times-thin
               unless currentBoard.isTemplatesBoard
                 unless currentBoard.isTemplateBoard
                   span.quiet
@@ -70,21 +62,23 @@ template(name="addListForm")
               i.fa.fa-plus
 
 template(name="moveSwimlanePopup")
-  unless currentUser.isWorker
-    label {{_ 'boards'}}:
-    select.js-select-boards(autofocus)
-      each toBoard in toBoards
-        option(value="{{toBoard._id}}") {{toBoard.title}}
+  if currentUser
+    unless currentUser.isWorker
+      label {{_ 'boards'}}:
+      select.js-select-boards(autofocus)
+        each toBoard in toBoards
+          option(value="{{toBoard._id}}") {{toBoard.title}}
 
-  .edit-controls.clearfix
-    button.primary.confirm.js-done {{_ 'done'}}
+      .edit-controls.clearfix
+        button.primary.confirm.js-done {{_ 'done'}}
 
 template(name="copySwimlanePopup")
-  unless currentUser.isWorker
-    label {{_ 'boards'}}:
-    select.js-select-boards(autofocus)
-      each toBoard in toBoards
-        option(value="{{toBoard._id}}" selected="{{#if $eq toBoard.title board.title}}1{{/if}}") {{toBoard.title}}
+  if currentUser
+    unless currentUser.isWorker
+      label {{_ 'boards'}}:
+      select.js-select-boards(autofocus)
+        each toBoard in toBoards
+          option(value="{{toBoard._id}}" selected="{{#if $eq toBoard.title board.title}}1{{/if}}") {{toBoard.title}}
 
-  .edit-controls.clearfix
-    button.primary.confirm.js-done {{_ 'done'}}
+      .edit-controls.clearfix
+        button.primary.confirm.js-done {{_ 'done'}}

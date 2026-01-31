@@ -1,7 +1,6 @@
 import { ReactiveCache } from '/imports/reactiveCache';
 import { TAPi18n } from '/imports/i18n';
-
-BlazeLayout.setRoot('body');
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 
 let alreadyCheck = 1;
 let isCheckDone = false;
@@ -47,7 +46,7 @@ Template.userFormsLayout.onCreated(function () {
 
 Template.userFormsLayout.onRendered(() => {
   Meteor.call('getAuthenticationsEnabled', (_, result) => {
-    let enabledAuthenticationMethods = [ 'password' ]; // we show/hide this based on isPasswordLoginEnabled
+    let enabledAuthenticationMethods = ['password']; // we show/hide this based on isPasswordLoginEnabled
 
     if (result) {
       Object.keys(result).forEach((m) => {
@@ -86,6 +85,98 @@ Template.userFormsLayout.onRendered(() => {
       validator,
     );
     EscapeActions.executeAll();
+    
+    // Set up MutationObserver for OIDC button instead of deprecated DOMSubtreeModified
+    const oidcButton = document.getElementById('at-oidc');
+    if (oidcButton) {
+      const observer = new MutationObserver((mutations) => {
+        if (alreadyCheck <= 2) {
+          let currSetting = ReactiveCache.getCurrentSetting();
+          let oidcBtnElt = $('#at-oidc');
+          if (
+            currSetting &&
+            currSetting !== undefined &&
+            currSetting.oidcBtnText !== undefined &&
+            oidcBtnElt != null &&
+            oidcBtnElt != undefined
+          ) {
+            let htmlvalue = "<i class='fa fa-oidc'></i>" + currSetting.oidcBtnText;
+            if (alreadyCheck == 1) {
+              alreadyCheck++;
+              oidcBtnElt.html('');
+            } else {
+              alreadyCheck++;
+              oidcBtnElt.html(htmlvalue);
+            }
+          }
+        } else {
+          alreadyCheck = 1;
+        }
+      });
+      observer.observe(oidcButton, { childList: true, subtree: true });
+    }
+    
+    // Set up MutationObserver for .at-form instead of deprecated DOMSubtreeModified
+    const atForm = document.querySelector('.at-form');
+    if (atForm) {
+      const formObserver = new MutationObserver((mutations) => {
+        if (alreadyCheck <= 2 && !isCheckDone) {
+          if (document.getElementById('at-oidc') != null) {
+            let currSetting = ReactiveCache.getCurrentSetting();
+            let oidcBtnElt = $('#at-oidc');
+            if (
+              currSetting &&
+              currSetting !== undefined &&
+              currSetting.oidcBtnText !== undefined &&
+              oidcBtnElt != null &&
+              oidcBtnElt != undefined
+            ) {
+              let htmlvalue =
+                "<i class='fa fa-oidc'></i>" + currSetting.oidcBtnText;
+              if (alreadyCheck == 1) {
+                alreadyCheck++;
+                oidcBtnElt.html('');
+              } else {
+                alreadyCheck++;
+                isCheckDone = true;
+                oidcBtnElt.html(htmlvalue);
+              }
+            }
+          }
+        } else {
+          alreadyCheck = 1;
+        }
+      });
+      formObserver.observe(atForm, { childList: true, subtree: true });
+    }
+
+    // Add autocomplete attribute to login input for WCAG compliance
+    const loginInput = document.querySelector(
+      'input[type="text"], input[type="email"]',
+    );
+    if (
+      loginInput &&
+      loginInput.name &&
+      (loginInput.name.toLowerCase().includes('user') ||
+        loginInput.name.toLowerCase().includes('email'))
+    ) {
+      loginInput.setAttribute('autocomplete', 'username email');
+    }
+
+    // Add autocomplete attributes to password fields for WCAG compliance
+    const passwordInputs = document.querySelectorAll('input[type="password"]');
+    passwordInputs.forEach((input) => {
+      if (input.name && input.name.includes('password')) {
+        if (
+          input.name.includes('password_again') ||
+          input.name.includes('new_password')
+        ) {
+          input.setAttribute('autocomplete', 'new-password');
+        } else {
+          input.setAttribute('autocomplete', 'current-password');
+        }
+      }
+    });
   });
 });
 
@@ -93,18 +184,18 @@ Template.userFormsLayout.helpers({
   isLegalNoticeLinkExist() {
     const currSet = Template.instance().currentSetting.get();
     if (currSet && currSet !== undefined && currSet != null) {
-      return currSet.legalNotice !== undefined && currSet.legalNotice.trim() != "";
-    }
-    else
-      return false;
+      return (
+        currSet.legalNotice !== undefined && currSet.legalNotice.trim() != ''
+      );
+    } else return false;
   },
 
   getLegalNoticeWithWritTraduction() {
-    let spanLegalNoticeElt = $("#legalNoticeSpan");
+    let spanLegalNoticeElt = $('#legalNoticeSpan');
     if (spanLegalNoticeElt != null && spanLegalNoticeElt != undefined) {
       spanLegalNoticeElt.html(TAPi18n.__('acceptance_of_our_legalNotice', {}));
     }
-    let atLinkLegalNoticeElt = $("#legalNoticeAtLink");
+    let atLinkLegalNoticeElt = $('#legalNoticeAtLink');
     if (atLinkLegalNoticeElt != null && atLinkLegalNoticeElt != undefined) {
       atLinkLegalNoticeElt.html(TAPi18n.__('legalNotice', {}));
     }
@@ -125,7 +216,7 @@ Template.userFormsLayout.helpers({
 
   languages() {
     return TAPi18n.getSupportedLanguages()
-      .map(({ tag, name }) => ({ tag: tag, name }))
+      .map(({ tag, name, rtl }) => ({ tag, name, rtl }))
       .sort((a, b) => {
         if (a.name === b.name) {
           return 0;
@@ -156,52 +247,6 @@ Template.userFormsLayout.events({
     }
     isCheckDone = false;
   },
-  'click #at-signUp'(event, templateInstance) {
-    isCheckDone = false;
-  },
-  'DOMSubtreeModified #at-oidc'(event) {
-    if (alreadyCheck <= 2) {
-      let currSetting = ReactiveCache.getCurrentSetting();
-      let oidcBtnElt = $("#at-oidc");
-      if (currSetting && currSetting !== undefined && currSetting.oidcBtnText !== undefined && oidcBtnElt != null && oidcBtnElt != undefined) {
-        let htmlvalue = "<i class='fa fa-oidc'></i>" + currSetting.oidcBtnText;
-        if (alreadyCheck == 1) {
-          alreadyCheck++;
-          oidcBtnElt.html("");
-        }
-        else {
-          alreadyCheck++;
-          oidcBtnElt.html(htmlvalue);
-        }
-      }
-    }
-    else {
-      alreadyCheck = 1;
-    }
-  },
-  'DOMSubtreeModified .at-form'(event) {
-    if (alreadyCheck <= 2 && !isCheckDone) {
-      if (document.getElementById("at-oidc") != null) {
-        let currSetting = ReactiveCache.getCurrentSetting();
-        let oidcBtnElt = $("#at-oidc");
-        if (currSetting && currSetting !== undefined && currSetting.oidcBtnText !== undefined && oidcBtnElt != null && oidcBtnElt != undefined) {
-          let htmlvalue = "<i class='fa fa-oidc'></i>" + currSetting.oidcBtnText;
-          if (alreadyCheck == 1) {
-            alreadyCheck++;
-            oidcBtnElt.html("");
-          }
-          else {
-            alreadyCheck++;
-            isCheckDone = true;
-            oidcBtnElt.html(htmlvalue);
-          }
-        }
-      }
-    }
-    else {
-      alreadyCheck = 1;
-    }
-  },
 });
 
 Template.defaultLayout.events({
@@ -229,14 +274,14 @@ async function authentication(event, templateInstance) {
 
   switch (result) {
     case 'ldap':
-      return new Promise(resolve => {
+      return new Promise((resolve) => {
         Meteor.loginWithLDAP(match, password, function () {
           resolve(FlowRouter.go('/'));
         });
       });
 
     case 'saml':
-      return new Promise(resolve => {
+      return new Promise((resolve) => {
         const provider = Meteor.settings.public.SAML_PROVIDER;
         Meteor.loginWithSaml(
           {
@@ -249,7 +294,7 @@ async function authentication(event, templateInstance) {
       });
 
     case 'cas':
-      return new Promise(resolve => {
+      return new Promise((resolve) => {
         Meteor.loginWithCas(match, password, function () {
           resolve(FlowRouter.go('/'));
         });
@@ -261,9 +306,15 @@ async function authentication(event, templateInstance) {
 }
 
 function getAuthenticationMethod(
-  { displayAuthenticationMethod, defaultAuthenticationMethod },
+  settings,
   match,
 ) {
+  if (!settings) {
+    return getUserAuthenticationMethod(undefined, match);
+  }
+  
+  const { displayAuthenticationMethod, defaultAuthenticationMethod } = settings;
+  
   if (displayAuthenticationMethod) {
     return $('.select-authentication').val();
   }
@@ -271,7 +322,7 @@ function getAuthenticationMethod(
 }
 
 function getUserAuthenticationMethod(defaultAuthenticationMethod, match) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     try {
       Meteor.subscribe('user-authenticationMethod', match, {
         onReady() {

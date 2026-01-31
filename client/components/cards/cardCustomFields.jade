@@ -22,7 +22,7 @@ template(name="cardCustomField-text")
                 = value
             .edit-controls.clearfix
                 button.primary(type="submit") {{_ 'save'}}
-                a.fa.fa-times-thin.js-close-inlined-form
+                a.js-close-inlined-form
         else
             a.js-open-inlined-form
                 if value
@@ -41,7 +41,7 @@ template(name="cardCustomField-number")
             input(type="number" value=data.value)
             .edit-controls.clearfix
                 button.primary(type="submit") {{_ 'save'}}
-                a.fa.fa-times-thin.js-close-inlined-form
+                a.js-close-inlined-form
         else
             a.js-open-inlined-form
                 if value
@@ -55,10 +55,11 @@ template(name="cardCustomField-number")
 template(name="cardCustomField-checkbox")
   .js-checklist-item.checklist-item(class="{{#if data.value }}is-checked{{/if}}")
     if canModifyCard
-      .check-box-container
-        .check-box.materialCheckBox(class="{{#if data.value }}is-checked{{/if}}")
+      span.check-box-unicode
+        i.fa(class="{{#if data.value}}fa-check-square{{else}}fa-square-o{{/if}}")
     else
-      .materialCheckBox(class="{{#if data.value }}is-checked{{/if}}")
+      span.check-box-unicode
+        i.fa(class="{{#if data.value}}fa-check-square{{else}}fa-square-o{{/if}}")
 
 template(name="cardCustomField-currency")
     if canModifyCard
@@ -66,7 +67,7 @@ template(name="cardCustomField-currency")
             input(type="text" value=data.value autofocus)
             .edit-controls.clearfix
                 button.primary(type="submit") {{_ 'save'}}
-                a.fa.fa-times-thin.js-close-inlined-form
+                a.js-close-inlined-form
         else
             a.js-open-inlined-form
                 if value
@@ -79,13 +80,14 @@ template(name="cardCustomField-currency")
 
 template(name="cardCustomField-date")
     if canModifyCard
-      a.js-edit-date(title="{{showTitle}} {{_ 'predicate-week'}} {{showWeek}}" class="{{classes}}")
+      a.js-edit-date(title="{{showTitle}} {{_ 'predicate-week'}} {{#if showWeekOfYear}}{{showWeek}}{{/if}}" class="{{classes}}")
         if value
           div.card-date
             time(datetime="{{showISODate}}")
               | {{showDate}}
-              b
-                | {{showWeek}}
+              if showWeekOfYear
+                b
+                  | {{showWeek}}
         else
           | {{_ 'edit'}}
     else
@@ -93,8 +95,9 @@ template(name="cardCustomField-date")
         div.card-date
           time(datetime="{{showISODate}}")
             | {{showDate}}
-            b
-              | {{showWeek}}
+            if showWeekOfYear
+                b
+                | {{showWeek}}
 
 template(name="cardCustomField-dropdown")
     if canModifyCard
@@ -111,7 +114,7 @@ template(name="cardCustomField-dropdown")
                             = name
             .edit-controls.clearfix
                 button.primary(type="submit") {{_ 'save'}}
-                a.fa.fa-times-thin.js-close-inlined-form
+                a.js-close-inlined-form
         else
             a.js-open-inlined-form
                 if value
@@ -132,7 +135,7 @@ template(name="cardCustomField-stringtemplate")
             input.js-card-customfield-stringtemplate-item.last(type="text" value="" placeholder="{{_ 'custom-field-stringtemplate-item-placeholder'}}" autofocus)
             .edit-controls.clearfix
                 button.primary(type="submit") {{_ 'save'}}
-                a.fa.fa-times-thin.js-close-inlined-form
+                a.js-close-inlined-form
         else
             a.js-open-inlined-form
                 if value

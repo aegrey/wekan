@@ -1,7 +1,27 @@
 import { ReactiveCache } from '/imports/reactiveCache';
-import moment from 'moment/min/moment-with-locales';
 import { TAPi18n } from '/imports/i18n';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 import { DatePicker } from '/client/lib/datepicker';
+import { 
+  formatDateTime, 
+  formatDate, 
+  formatTime, 
+  getISOWeek, 
+  isValidDate, 
+  isBefore, 
+  isAfter, 
+  isSame, 
+  add, 
+  subtract, 
+  startOf, 
+  endOf, 
+  format, 
+  parseDate, 
+  now, 
+  createDate, 
+  fromNow, 
+  calendar 
+} from '/imports/lib/dateUtils';
 import Cards from '/models/cards';
 import Boards from '/models/boards';
 import Checklists from '/models/checklists';
@@ -12,6 +32,9 @@ import CardComments from '/models/cardComments';
 import { ALLOWED_COLORS } from '/config/const';
 import { UserAvatar } from '../users/userAvatar';
 import { DialogWithBoardSwimlaneList } from '/client/lib/dialogWithBoardSwimlaneList';
+import { DialogWithBoardSwimlaneListCard } from '/client/lib/dialogWithBoardSwimlaneListCard';
+import { handleFileUpload } from './attachments';
+import uploadProgressManager from '../../lib/uploadProgressManager';
 
 const subManager = new SubsManager();
 const { calculateIndexData } = Utils;
@@ -42,7 +65,11 @@ BlazeComponent.extendComponent({
       const boardBody = this.parentComponent().parentComponent();
       //in Miniview parent is Board, not BoardBody.
       if (boardBody !== null) {
-        boardBody.showOverlay.set(true);
+        // Only show overlay in mobile mode, not in desktop mode
+        const isMobile = Utils.getMobileMode();
+        if (isMobile) {
+          boardBody.showOverlay.set(true);
+        }
         boardBody.mouseHasEnterCardDetails = false;
       }
     }
@@ -60,11 +87,8 @@ BlazeComponent.extendComponent({
 
   isWatching() {
     const card = this.currentData();
+    if (!card || typeof card.findWatcher !== 'function') return false;
     return card.findWatcher(Meteor.userId());
-  },
-
-  hiddenSystemMessages() {
-    return ReactiveCache.getCurrentUser().hasHiddenSystemMessages();
   },
 
   customFieldsGrid() {
@@ -74,6 +98,23 @@ BlazeComponent.extendComponent({
 
   cardMaximized() {
     return !Utils.getPopupCardId() && ReactiveCache.getCurrentUser().hasCardMaximized();
+  },
+
+  showActivities() {
+    const user = ReactiveCache.getCurrentUser();
+    return user && user.hasShowActivities();
+  },
+
+  cardCollapsed() {
+    const user = ReactiveCache.getCurrentUser();
+    if (user && user.profile) {
+      return !!user.profile.cardCollapsed;
+    }
+    if (Users.getPublicCardCollapsed) {
+      const stored = Users.getPublicCardCollapsed();
+      if (typeof stored === 'boolean') return stored;
+    }
+    return false;
   },
 
   presentParentTask() {
@@ -118,13 +159,19 @@ BlazeComponent.extendComponent({
     );
   },
 
+  isVerticalScrollbars() {
+    const user = ReactiveCache.getCurrentUser();
+    return user && user.isVerticalScrollbars();
+  },
+
   /** returns if the list id is the current list id
    * @param listId list id to check
    * @return is the list id the current list id ?
    */
   isCurrentListId(listId) {
-    const ret = this.data().listId == listId;
-    return ret;
+    const data = this.data();
+    if (!data || typeof data.listId === 'undefined') return false;
+    return data.listId == listId;
   },
 
   onRendered() {
@@ -274,29 +321,159 @@ BlazeComponent.extendComponent({
     return [
       {
         ...events,
+        'click .js-card-collapse-toggle'() {
+          const user = ReactiveCache.getCurrentUser();
+          const currentState = user && user.profile ? !!user.profile.cardCollapsed : !!Users.getPublicCardCollapsed();
+          if (user) {
+            Meteor.call('setCardCollapsed', !currentState);
+          } else if (Users.setPublicCardCollapsed) {
+            Users.setPublicCardCollapsed(!currentState);
+          }
+        },
+        'mousedown .js-card-drag-handle'(event) {
+          event.preventDefault();
+          const $card = $(event.target).closest('.card-details');
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const startLeft = $card.offset().left;
+          const startTop = $card.offset().top;
+          
+          const onMouseMove = (e) => {
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+            $card.css({
+              left: startLeft + deltaX + 'px',
+              top: startTop + deltaY + 'px'
+            });
+          };
+          
+          const onMouseUp = () => {
+            $(document).off('mousemove', onMouseMove);
+            $(document).off('mouseup', onMouseUp);
+          };
+          
+          $(document).on('mousemove', onMouseMove);
+          $(document).on('mouseup', onMouseUp);
+        },
+        'mousedown .js-card-title-drag-handle'(event) {
+          // Allow dragging from title for ReadOnly users
+          // Don't interfere with text selection
+          if (event.target.tagName === 'A' || $(event.target).closest('a').length > 0) {
+            return; // Don't drag if clicking on links
+          }
+          
+          event.preventDefault();
+          const $card = $(event.target).closest('.card-details');
+          const startX = event.clientX;
+          const startY = event.clientY;
+          const startLeft = $card.offset().left;
+          const startTop = $card.offset().top;
+          
+          const onMouseMove = (e) => {
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+            $card.css({
+              left: startLeft + deltaX + 'px',
+              top: startTop + deltaY + 'px'
+            });
+          };
+          
+          const onMouseUp = () => {
+            $(document).off('mousemove', onMouseMove);
+            $(document).off('mouseup', onMouseUp);
+          };
+          
+          $(document).on('mousemove', onMouseMove);
+          $(document).on('mouseup', onMouseUp);
+        },
         'click .js-close-card-details'() {
-          Utils.goBoardId(this.data().boardId);
+          // Get board ID from either the card data or current board in session
+          const card = this.currentData() || this.data();
+          const boardId = (card && card.boardId) || Utils.getCurrentBoard()._id;
+          const cardId = card && card._id;
+
+          if (boardId) {
+            // In desktop mode, remove from openCards array
+            const isMobile = Utils.getMobileMode();
+            if (!isMobile && cardId) {
+              const openCards = Session.get('openCards') || [];
+              const filtered = openCards.filter(id => id !== cardId);
+              Session.set('openCards', filtered);
+
+              // If this was the current card, clear it
+              if (Session.get('currentCard') === cardId) {
+                Session.set('currentCard', null);
+              }
+              // Don't navigate away in desktop mode - just close the card
+              return;
+            }
+
+            // Mobile mode: Clear the current card session to close the card
+            Session.set('currentCard', null);
+
+            // Navigate back to board without card
+            const board = ReactiveCache.getBoard(boardId);
+            if (board) {
+              FlowRouter.go('board', {
+                id: board._id,
+                slug: board.slug,
+              });
+            }
+          }
         },
         'click .js-copy-link'(event) {
           event.preventDefault();
-          const promise = Utils.copyTextToClipboard(event.target.href);
+          const url = this.data().absoluteUrl();
+          const promise = Utils.copyTextToClipboard(url);
 
           const $tooltip = this.$('.card-details-header .copied-tooltip');
           Utils.showCopied(promise, $tooltip);
         },
+        'change .js-date-format-selector'(event) {
+          const dateFormat = event.target.value;
+          Meteor.call('changeDateFormat', dateFormat);
+        },
         'click .js-open-card-details-menu': Popup.open('cardDetailsActions'),
-        'submit .js-card-description'(event) {
+        // Mobile: switch to desktop popup view (maximize)
+        'click .js-mobile-switch-to-desktop'(event) {
+          event.preventDefault();
+          // Switch global mode to desktop so the card appears as desktop popup
+          Utils.setMobileMode(false);
+        },
+        'click .js-card-zoom-in'(event) {
+          event.preventDefault();
+          const current = Utils.getCardZoom();
+          const newZoom = Math.min(3.0, current + 0.1);
+          Utils.setCardZoom(newZoom);
+        },
+        'click .js-card-zoom-out'(event) {
+          event.preventDefault();
+          const current = Utils.getCardZoom();
+          const newZoom = Math.max(0.5, current - 0.1);
+          Utils.setCardZoom(newZoom);
+        },
+        'click .js-card-mobile-desktop-toggle'(event) {
+          event.preventDefault();
+          const currentMode = Utils.getMobileMode();
+          Utils.setMobileMode(!currentMode);
+        },
+        'click .js-card-mobile-desktop-toggle'(event) {
+          event.preventDefault();
+          const currentMode = Utils.getMobileMode();
+          Utils.setMobileMode(!currentMode);
+        },
+        async 'submit .js-card-description'(event) {
           event.preventDefault();
           const description = this.currentComponent().getValue();
-          this.data().setDescription(description);
+          await this.data().setDescription(description);
         },
-        'submit .js-card-details-title'(event) {
+        async 'submit .js-card-details-title'(event) {
           event.preventDefault();
           const title = this.currentComponent().getValue().trim();
           if (title) {
-            this.data().setTitle(title);
+            await this.data().setTitle(title);
           } else {
-            this.data().setTitle('');
+            await this.data().setTitle('');
           }
         },
         'submit .js-card-details-assigner'(event) {
@@ -323,23 +500,23 @@ BlazeComponent.extendComponent({
             this.find('button[type=submit]').click();
           }
         },
-        'submit .js-card-details-sort'(event) {
+        async 'submit .js-card-details-sort'(event) {
           event.preventDefault();
           const sort = parseFloat(this.currentComponent()
             .getValue()
             .trim());
           if (!Number.isNaN(sort)) {
             let card = this.data();
-            card.move(card.boardId, card.swimlaneId, card.listId, sort);
+            await card.move(card.boardId, card.swimlaneId, card.listId, sort);
           }
         },
-        'change .js-select-card-details-lists'(event) {
+        async 'change .js-select-card-details-lists'(event) {
           let card = this.data();
           const listSelect = this.$('.js-select-card-details-lists')[0];
           const listId = listSelect.options[listSelect.selectedIndex].value;
 
           const minOrder = card.getMinSort(listId, card.swimlaneId);
-          card.move(card.boardId, card.swimlaneId, listId, minOrder - 1);
+          await card.move(card.boardId, card.swimlaneId, listId, minOrder - 1);
         },
         'click .js-go-to-linked-card'() {
           Utils.goCardId(this.data().linkedId);
@@ -377,8 +554,8 @@ BlazeComponent.extendComponent({
           Session.set('cardDetailsIsDragging', false);
           Session.set('cardDetailsIsMouseDown', false);
         },
-        'click #toggleButton'() {
-          Meteor.call('toggleSystemMessages');
+        async 'click #toggleHideCheckedChecklistItems'() {
+          await this.data().toggleHideCheckedChecklistItems();
         },
         'click #toggleCustomFieldsGridButton'() {
           Meteor.call('toggleCustomFieldsGrid');
@@ -401,56 +578,57 @@ BlazeComponent.extendComponent({
           ) {
             newState = forIt;
           }
-          this.data().setVote(Meteor.userId(), newState);
+          // Use secure server method; direct client updates to vote are blocked
+          Meteor.call('cards.vote', this.data()._id, newState);
         },
         'click .js-poker'(e) {
           let newState = null;
           if ($(e.target).hasClass('js-poker-vote-one')) {
             newState = 'one';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-two')) {
             newState = 'two';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-three')) {
             newState = 'three';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-five')) {
             newState = 'five';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-eight')) {
             newState = 'eight';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-thirteen')) {
             newState = 'thirteen';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-twenty')) {
             newState = 'twenty';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-forty')) {
             newState = 'forty';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-one-hundred')) {
             newState = 'oneHundred';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
           if ($(e.target).hasClass('js-poker-vote-unsure')) {
             newState = 'unsure';
-            this.data().setPoker(Meteor.userId(), newState);
+            Meteor.call('cards.pokerVote', this.data()._id, newState);
           }
         },
         'click .js-poker-finish'(e) {
           if ($(e.target).hasClass('js-poker-finish')) {
             e.preventDefault();
-            const now = moment().format('YYYY-MM-DD HH:mm');
-            this.data().setPokerEnd(now);
+            const now = new Date();
+            Meteor.call('cards.setPokerEnd', this.data()._id, now);
           }
         },
 
@@ -458,9 +636,9 @@ BlazeComponent.extendComponent({
           if ($(e.target).hasClass('js-poker-replay')) {
             e.preventDefault();
             this.currentCard = this.currentData();
-            this.currentCard.replayPoker();
-            this.data().unsetPokerEnd();
-            this.data().unsetPokerEstimation();
+            Meteor.call('cards.replayPoker', this.currentCard._id);
+            Meteor.call('cards.unsetPokerEnd', this.currentCard._id);
+            Meteor.call('cards.unsetPokerEstimation', this.currentCard._id);
           }
         },
         'click .js-poker-estimation'(event) {
@@ -471,9 +649,65 @@ BlazeComponent.extendComponent({
             this.find('#pokerEstimation').value = '';
 
             if (ruleTitle) {
-              this.data().setPokerEstimation(parseInt(ruleTitle, 10));
+              Meteor.call('cards.setPokerEstimation', this.data()._id, parseInt(ruleTitle, 10));
             } else {
-              this.data().setPokerEstimation('');
+              Meteor.call('cards.unsetPokerEstimation', this.data()._id);
+            }
+          }
+        },
+        // Drag and drop file upload handlers
+        'dragover .js-card-details'(event) {
+          // Only prevent default for file drags to avoid interfering with other drag operations
+          const dataTransfer = event.originalEvent.dataTransfer;
+          if (dataTransfer && dataTransfer.types && dataTransfer.types.includes('Files')) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        },
+        'dragenter .js-card-details'(event) {
+          const dataTransfer = event.originalEvent.dataTransfer;
+          if (dataTransfer && dataTransfer.types && dataTransfer.types.includes('Files')) {
+            event.preventDefault();
+            event.stopPropagation();
+            const card = this.data();
+            const board = card.board();
+            // Only allow drag-and-drop if user can modify card and board allows attachments
+            if (Utils.canModifyCard() && board && board.allowsAttachments) {
+              $(event.currentTarget).addClass('is-dragging-over');
+            }
+          }
+        },
+        'dragleave .js-card-details'(event) {
+          const dataTransfer = event.originalEvent.dataTransfer;
+          if (dataTransfer && dataTransfer.types && dataTransfer.types.includes('Files')) {
+            event.preventDefault();
+            event.stopPropagation();
+            $(event.currentTarget).removeClass('is-dragging-over');
+          }
+        },
+        'drop .js-card-details'(event) {
+          const dataTransfer = event.originalEvent.dataTransfer;
+          if (dataTransfer && dataTransfer.types && dataTransfer.types.includes('Files')) {
+            event.preventDefault();
+            event.stopPropagation();
+            $(event.currentTarget).removeClass('is-dragging-over');
+
+            const card = this.data();
+            const board = card.board();
+
+            // Check permissions
+            if (!Utils.canModifyCard() || !board || !board.allowsAttachments) {
+              return;
+            }
+
+            // Check if this is a file drop (not a checklist item reorder)
+            if (!dataTransfer.files || dataTransfer.files.length === 0) {
+              return;
+            }
+
+            const files = dataTransfer.files;
+            if (files && files.length > 0) {
+              handleFileUpload(card, files);
             }
           }
         },
@@ -486,6 +720,21 @@ Template.cardDetails.helpers({
   isPopup() {
     let ret = !!Utils.getPopupCardId();
     return ret;
+  },
+  isDateFormat(format) {
+    const currentUser = ReactiveCache.getCurrentUser();
+    if (!currentUser) return format === 'YYYY-MM-DD';
+    return currentUser.getDateFormat() === format;
+  },
+  // Upload progress helpers
+  hasActiveUploads() {
+    return uploadProgressManager.hasActiveUploads(this._id);
+  },
+  uploads() {
+    return uploadProgressManager.getUploadsForCard(this._id);
+  },
+  uploadCount() {
+    return uploadProgressManager.getUploadCountForCard(this._id);
   }
 });
 Template.cardDetailsPopup.onDestroyed(() => {
@@ -582,11 +831,16 @@ Template.editCardSortOrderForm.onRendered(function () {
 
 Template.cardDetailsActionsPopup.helpers({
   isWatching() {
+    if (!this || typeof this.findWatcher !== 'function') return false;
     return this.findWatcher(Meteor.userId());
   },
 
   isBoardAdmin() {
     return ReactiveCache.getCurrentUser().isBoardAdmin();
+  },
+
+  showListOnMinicard() {
+    return this.showListOnMinicard;
   },
 });
 
@@ -608,21 +862,21 @@ Template.cardDetailsActionsPopup.events({
   'click .js-convert-checklist-item-to-card': Popup.open('convertChecklistItemToCard'),
   'click .js-copy-checklist-cards': Popup.open('copyManyCards'),
   'click .js-set-card-color': Popup.open('setCardColor'),
-  'click .js-move-card-to-top'(event) {
+  async 'click .js-move-card-to-top'(event) {
     event.preventDefault();
     const minOrder = this.getMinSort();
-    this.move(this.boardId, this.swimlaneId, this.listId, minOrder - 1);
+    await this.move(this.boardId, this.swimlaneId, this.listId, minOrder - 1);
     Popup.back();
   },
-  'click .js-move-card-to-bottom'(event) {
+  async 'click .js-move-card-to-bottom'(event) {
     event.preventDefault();
     const maxOrder = this.getMaxSort();
-    this.move(this.boardId, this.swimlaneId, this.listId, maxOrder + 1);
+    await this.move(this.boardId, this.swimlaneId, this.listId, maxOrder + 1);
     Popup.back();
   },
-  'click .js-archive': Popup.afterConfirm('cardArchive', function () {
+  'click .js-archive': Popup.afterConfirm('cardArchive', async function () {
     Popup.close();
-    this.archive();
+    await this.archive();
     Utils.goBoardId(this.boardId);
   }),
   'click .js-more': Popup.open('cardMore'),
@@ -632,6 +886,12 @@ Template.cardDetailsActionsPopup.events({
     Meteor.call('watch', 'card', currentCard._id, level, (err, ret) => {
       if (!err && ret) Popup.close();
     });
+  },
+  'click .js-toggle-show-list-on-minicard'() {
+    const currentCard = this;
+    const newValue = !currentCard.showListOnMinicard;
+    Cards.update(currentCard._id, { $set: { showListOnMinicard: newValue } });
+    Popup.close();
   },
 });
 
@@ -668,6 +928,12 @@ Template.cardMembersPopup.onCreated(function () {
 });
 
 Template.cardMembersPopup.events({
+  'click .js-select-member'(event) {
+    const card = Utils.getCurrentCard();
+    const memberId = this.userId;
+    card.toggleMember(memberId);
+    event.preventDefault();
+  },
   'keyup .card-members-filter'(event) {
     const members = filterMembers(event.target.value);
     Template.instance().members.set(members);
@@ -675,8 +941,23 @@ Template.cardMembersPopup.events({
 });
 
 Template.cardMembersPopup.helpers({
+  isCardMember() {
+    const card = Template.parentData();
+    const cardMembers = card.getMembers();
+
+    return _.contains(cardMembers, this.userId);
+  },
+
   members() {
-    return _.sortBy(Template.instance().members.get(),'fullname');
+    const members = Template.instance().members.get();
+    const uniqueMembers = _.uniq(members, 'userId');
+    return _.sortBy(uniqueMembers, member => {
+      const user = ReactiveCache.getUser(member.userId);
+      return user ? user.profile.fullname : '';
+    });
+  },
+  userData() {
+    return ReactiveCache.getUser(this.userId);
   },
 });
 
@@ -725,26 +1006,42 @@ Template.editCardAssignerForm.events({
 });
 
 /** Move Card Dialog */
-(class extends DialogWithBoardSwimlaneList {
+(class extends DialogWithBoardSwimlaneListCard {
   getDialogOptions() {
     const ret = ReactiveCache.getCurrentUser().getMoveAndCopyDialogOptions();
     return ret;
   }
-  setDone(boardId, swimlaneId, listId, options) {
+  async setDone(cardId, options) {
     ReactiveCache.getCurrentUser().setMoveAndCopyDialogOption(this.currentBoardId, options);
     const card = this.data();
-    const minOrder = card.getMinSort(listId, swimlaneId);
-    card.move(boardId, swimlaneId, listId, minOrder - 1);
+    let sortIndex = 0;
+
+    if (cardId) {
+      const targetCard = ReactiveCache.getCard(cardId);
+      if (targetCard) {
+        const position = this.$('input[name="position"]:checked').val();
+        if (position === 'above') {
+          sortIndex = targetCard.sort - 0.5;
+        } else {
+          sortIndex = targetCard.sort + 0.5;
+        }
+      }
+    } else {
+      // If no card selected, move to end
+      sortIndex = card.getMaxSort(options.listId, options.swimlaneId) + 1;
+    }
+
+    await card.move(options.boardId, options.swimlaneId, options.listId, sortIndex);
   }
 }).register('moveCardPopup');
 
 /** Copy Card Dialog */
-(class extends DialogWithBoardSwimlaneList {
+(class extends DialogWithBoardSwimlaneListCard {
   getDialogOptions() {
     const ret = ReactiveCache.getCurrentUser().getMoveAndCopyDialogOptions();
     return ret;
   }
-  setDone(boardId, swimlaneId, listId, options) {
+  async setDone(cardId, options) {
     ReactiveCache.getCurrentUser().setMoveAndCopyDialogOption(this.currentBoardId, options);
     const card = this.data();
 
@@ -753,8 +1050,30 @@ Template.editCardAssignerForm.events({
     const title = textarea.val().trim();
 
     if (title) {
-      // insert new card to the top of new list
-      const newCardId = Meteor.call('copyCard', card._id, boardId, swimlaneId, listId, true, {title: title});
+      const newCardId = Meteor.call('copyCard', card._id, options.boardId, options.swimlaneId, options.listId, true, {title: title});
+
+      // Position the copied card
+      if (newCardId) {
+        const newCard = ReactiveCache.getCard(newCardId);
+        let sortIndex = 0;
+
+        if (cardId) {
+          const targetCard = ReactiveCache.getCard(cardId);
+          if (targetCard) {
+            const position = this.$('input[name="position"]:checked').val();
+            if (position === 'above') {
+              sortIndex = targetCard.sort - 0.5;
+            } else {
+              sortIndex = targetCard.sort + 0.5;
+            }
+          }
+        } else {
+          // If no card selected, copy to end
+          sortIndex = newCard.getMaxSort(options.listId, options.swimlaneId) + 1;
+        }
+
+        await newCard.move(options.boardId, options.swimlaneId, options.listId, sortIndex);
+      }
 
       // In case the filter is active we need to add the newly inserted card in
       // the list of exceptions -- cards that are not filtered. Otherwise the
@@ -766,12 +1085,12 @@ Template.editCardAssignerForm.events({
 }).register('copyCardPopup');
 
 /** Convert Checklist-Item to card dialog */
-(class extends DialogWithBoardSwimlaneList {
+(class extends DialogWithBoardSwimlaneListCard {
   getDialogOptions() {
     const ret = ReactiveCache.getCurrentUser().getMoveAndCopyDialogOptions();
     return ret;
   }
-  setDone(boardId, swimlaneId, listId, options) {
+  async setDone(cardId, options) {
     ReactiveCache.getCurrentUser().setMoveAndCopyDialogOption(this.currentBoardId, options);
     const card = this.data();
 
@@ -781,14 +1100,29 @@ Template.editCardAssignerForm.events({
     if (title) {
       const _id = Cards.insert({
         title: title,
-        listId: listId,
-        boardId: boardId,
-        swimlaneId: swimlaneId,
+        listId: options.listId,
+        boardId: options.boardId,
+        swimlaneId: options.swimlaneId,
         sort: 0,
       });
-      const card = ReactiveCache.getCard(_id);
-      const minOrder = card.getMinSort();
-      card.move(card.boardId, card.swimlaneId, card.listId, minOrder - 1);
+      const newCard = ReactiveCache.getCard(_id);
+
+      let sortIndex = 0;
+      if (cardId) {
+        const targetCard = ReactiveCache.getCard(cardId);
+        if (targetCard) {
+          const position = this.$('input[name="position"]:checked').val();
+          if (position === 'above') {
+            sortIndex = targetCard.sort - 0.5;
+          } else {
+            sortIndex = targetCard.sort + 0.5;
+          }
+        }
+      } else {
+        sortIndex = newCard.getMaxSort(options.listId, options.swimlaneId) + 1;
+      }
+
+      await newCard.move(options.boardId, options.swimlaneId, options.listId, sortIndex);
 
       Filter.addException(_id);
     }
@@ -796,12 +1130,12 @@ Template.editCardAssignerForm.events({
 }).register('convertChecklistItemToCardPopup');
 
 /** Copy many cards dialog */
-(class extends DialogWithBoardSwimlaneList {
+(class extends DialogWithBoardSwimlaneListCard {
   getDialogOptions() {
     const ret = ReactiveCache.getCurrentUser().getMoveAndCopyDialogOptions();
     return ret;
   }
-  setDone(boardId, swimlaneId, listId, options) {
+  async setDone(cardId, options) {
     ReactiveCache.getCurrentUser().setMoveAndCopyDialogOption(this.currentBoardId, options);
     const card = this.data();
 
@@ -811,7 +1145,29 @@ Template.editCardAssignerForm.events({
     if (title) {
       const titleList = JSON.parse(title);
       for (const obj of titleList) {
-        const newCardId = Meteor.call('copyCard', card._id, boardId, swimlaneId, listId, false, {title: obj.title, description: obj.description});
+        const newCardId = Meteor.call('copyCard', card._id, options.boardId, options.swimlaneId, options.listId, false, {title: obj.title, description: obj.description});
+
+        // Position the copied card
+        if (newCardId) {
+          const newCard = ReactiveCache.getCard(newCardId);
+          let sortIndex = 0;
+
+          if (cardId) {
+            const targetCard = ReactiveCache.getCard(cardId);
+            if (targetCard) {
+              const position = this.$('input[name="position"]:checked').val();
+              if (position === 'above') {
+                sortIndex = targetCard.sort - 0.5;
+              } else {
+                sortIndex = targetCard.sort + 0.5;
+              }
+            }
+          } else {
+            sortIndex = newCard.getMaxSort(options.listId, options.swimlaneId) + 1;
+          }
+
+          await newCard.move(options.boardId, options.swimlaneId, options.listId, sortIndex);
+        }
 
         // In case the filter is active we need to add the newly inserted card in
         // the list of exceptions -- cards that are not filtered. Otherwise the
@@ -846,18 +1202,65 @@ BlazeComponent.extendComponent({
         'click .js-palette-color'() {
           this.currentColor.set(this.currentData().color);
         },
-        'click .js-submit'() {
-          this.currentCard.setColor(this.currentColor.get());
-          Popup.close();
+        async 'click .js-submit'(event) {
+          event.preventDefault();
+          await this.currentCard.setColor(this.currentColor.get());
+          Popup.back();
         },
-        'click .js-remove-color'() {
-          this.currentCard.setColor(null);
-          Popup.close();
+        async 'click .js-remove-color'(event) {
+          event.preventDefault();
+          await this.currentCard.setColor(null);
+          Popup.back();
         },
       },
     ];
   },
 }).register('setCardColorPopup');
+
+BlazeComponent.extendComponent({
+  onCreated() {
+    this.currentColor = new ReactiveVar(null);
+  },
+
+  colors() {
+    return ALLOWED_COLORS.map((color) => ({ color, name: '' }));
+  },
+
+  isSelected(color) {
+    return this.currentColor.get() === color;
+  },
+
+  events() {
+    return [
+      {
+        'click .js-palette-color'(event) {
+          // Extract color from class name like "card-details-red"
+          const classes = $(event.currentTarget).attr('class').split(' ');
+          const colorClass = classes.find(cls => cls.startsWith('card-details-'));
+          const color = colorClass ? colorClass.replace('card-details-', '') : null;
+          this.currentColor.set(color);
+        },
+        async 'click .js-submit'(event) {
+          event.preventDefault();
+          const color = this.currentColor.get();
+          // Use MultiSelection to get selected cards and set color on each
+          for (const card of ReactiveCache.getCards(MultiSelection.getMongoSelector())) {
+            await card.setColor(color);
+          }
+          Popup.back();
+        },
+        async 'click .js-remove-color'(event) {
+          event.preventDefault();
+          // Use MultiSelection to get selected cards and remove color from each
+          for (const card of ReactiveCache.getCards(MultiSelection.getMongoSelector())) {
+            await card.setColor(null);
+          }
+          Popup.back();
+        },
+      },
+    ];
+  },
+}).register('setSelectionColorPopup');
 
 BlazeComponent.extendComponent({
   onCreated() {
@@ -993,20 +1396,15 @@ BlazeComponent.extendComponent({
             'is-checked',
           );
           const endString = this.currentCard.getVoteEnd();
-
-          this.currentCard.setVoteQuestion(
-            voteQuestion,
-            publicVote,
-            allowNonBoardMembers,
-          );
+          Meteor.call('cards.setVoteQuestion', this.currentCard._id, voteQuestion, publicVote, allowNonBoardMembers);
           if (endString) {
-            this.currentCard.setVoteEnd(endString);
+            Meteor.call('cards.setVoteEnd', this.currentCard._id, endString);
           }
           Popup.back();
         },
         'click .js-remove-vote': Popup.afterConfirm('deleteVote', () => {
           event.preventDefault();
-          this.currentCard.unsetVote();
+          Meteor.call('cards.unsetVote', this.currentCard._id);
           Popup.back();
         }),
         'click a.js-toggle-vote-public'(event) {
@@ -1025,8 +1423,8 @@ BlazeComponent.extendComponent({
 // editVoteEndDatePopup
 (class extends DatePicker {
   onCreated() {
-    super.onCreated(moment().format('YYYY-MM-DD HH:mm'));
-    this.data().getVoteEnd() && this.date.set(moment(this.data().getVoteEnd()));
+    super.onCreated(formatDateTime(now()));
+    this.data().getVoteEnd() && this.date.set(new Date(this.data().getVoteEnd()));
   }
   events() {
     return [
@@ -1037,12 +1435,12 @@ BlazeComponent.extendComponent({
           // if no time was given, init with 12:00
           const time =
             evt.target.time.value ||
-            moment(new Date().setHours(12, 0, 0)).format('LT');
+            formatTime(new Date().setHours(12, 0, 0));
 
           const dateString = `${evt.target.date.value} ${time}`;
 
           /*
-          const newDate = moment(dateString, 'L LT', true);
+          const newDate = parseDate(dateString, ['L LT'], true);
           if (newDate.isValid()) {
             // if active vote -  store it
             if (this.currentData().getVoteQuestion()) {
@@ -1056,28 +1454,27 @@ BlazeComponent.extendComponent({
 
           */
 
-          // Try to parse different date formats of all languages.
-          // This code is same for vote and planning poker.
-          const usaDate = moment(dateString, 'L LT', true);
-          const euroAmDate = moment(dateString, 'DD.MM.YYYY LT', true);
-          const euro24hDate = moment(dateString, 'DD.MM.YYYY HH.mm', true);
-          const eurodotDate = moment(dateString, 'DD.MM.YYYY HH:mm', true);
-          const minusDate = moment(dateString, 'YYYY-MM-DD HH:mm', true);
-          const slashDate = moment(dateString, 'DD/MM/YYYY HH.mm', true);
-          const dotDate = moment(dateString, 'DD/MM/YYYY HH:mm', true);
-          const brezhonegDate = moment(dateString, 'DD/MM/YYYY h[e]mm A', true);
-          const hrvatskiDate = moment(dateString, 'DD. MM. YYYY H:mm', true);
-          const latviaDate = moment(dateString, 'YYYY.MM.DD. H:mm', true);
-          const nederlandsDate = moment(dateString, 'DD-MM-YYYY HH:mm', true);
-          // greekDate does not work: el Greek Ελληνικά ,
-          // it has date format DD/MM/YYYY h:mm MM like 20/06/2021 11:15 MM
-          // where MM is maybe some text like AM/PM ?
-          // Also some other languages that have non-ascii characters in dates
-          // do not work.
-          const greekDate = moment(dateString, 'DD/MM/YYYY h:mm A', true);
-          const macedonianDate = moment(dateString, 'D.MM.YYYY H:mm', true);
+          // Try to parse different date formats using native Date parsing
+          const formats = [
+            'YYYY-MM-DD HH:mm',
+            'MM/DD/YYYY HH:mm',
+            'DD.MM.YYYY HH:mm',
+            'DD/MM/YYYY HH:mm',
+            'DD-MM-YYYY HH:mm'
+          ];
+          
+          let parsedDate = null;
+          for (const format of formats) {
+            parsedDate = parseDate(dateString, [format], true);
+            if (parsedDate) break;
+          }
+          
+          // Fallback to native Date parsing
+          if (!parsedDate) {
+            parsedDate = new Date(dateString);
+          }
 
-          if (usaDate.isValid()) {
+          if (isValidDate(parsedDate)) {
             // if active poker -  store it
             if (this.currentData().getPokerQuestion()) {
               this._storeDate(usaDate.toDate());
@@ -1206,10 +1603,10 @@ BlazeComponent.extendComponent({
     ];
   }
   _storeDate(newDate) {
-    this.card.setVoteEnd(newDate);
+    Meteor.call('cards.setVoteEnd', this.card._id, newDate);
   }
   _deleteDate() {
-    this.card.unsetVoteEnd();
+    Meteor.call('cards.unsetVoteEnd', this.card._id);
   }
 }.register('editVoteEndDatePopup'));
 
@@ -1231,17 +1628,14 @@ BlazeComponent.extendComponent({
           );
           const endString = this.currentCard.getPokerEnd();
 
-          this.currentCard.setPokerQuestion(
-            pokerQuestion,
-            allowNonBoardMembers,
-          );
+          Meteor.call('cards.setPokerQuestion', this.currentCard._id, pokerQuestion, allowNonBoardMembers);
           if (endString) {
-            this.currentCard.setPokerEnd(endString);
+            Meteor.call('cards.setPokerEnd', this.currentCard._id, new Date(endString));
           }
           Popup.back();
         },
         'click .js-remove-poker': Popup.afterConfirm('deletePoker', (event) => {
-          this.currentCard.unsetPoker();
+          Meteor.call('cards.unsetPoker', this.currentCard._id);
           Popup.back();
         }),
         'click a.js-toggle-poker-allow-non-members'(event) {
@@ -1256,9 +1650,9 @@ BlazeComponent.extendComponent({
 // editPokerEndDatePopup
 (class extends DatePicker {
   onCreated() {
-    super.onCreated(moment().format('YYYY-MM-DD HH:mm'));
+    super.onCreated(formatDateTime(now()));
     this.data().getPokerEnd() &&
-      this.date.set(moment(this.data().getPokerEnd()));
+      this.date.set(new Date(this.data().getPokerEnd()));
   }
 
   /*
@@ -1276,7 +1670,7 @@ BlazeComponent.extendComponent({
     return moment.localeData().longDateFormat('LT');
   }
 
-  const newDate = moment(dateString, dateformat() + ' ' + timeformat(), true);
+  const newDate = parseDate(dateString, [dateformat() + ' ' + timeformat()], true);
   */
 
   events() {
@@ -1288,7 +1682,7 @@ BlazeComponent.extendComponent({
           // if no time was given, init with 12:00
           const time =
             evt.target.time.value ||
-            moment(new Date().setHours(12, 0, 0)).format('LT');
+            formatTime(new Date().setHours(12, 0, 0));
 
           const dateString = `${evt.target.date.value} ${time}`;
 
@@ -1299,7 +1693,7 @@ BlazeComponent.extendComponent({
           Maybe client/components/lib/datepicker.jade could have hidden input field for
           datepicker format that could be used to detect date format?
 
-          const newDate = moment(dateString, dateformat() + ' ' + timeformat(), true);
+          const newDate = parseDate(dateString, [dateformat() + ' ' + timeformat()], true);
 
           if (newDate.isValid()) {
             // if active poker -  store it
@@ -1312,28 +1706,27 @@ BlazeComponent.extendComponent({
             }
           */
 
-          // Try to parse different date formats of all languages.
-          // This code is same for vote and planning poker.
-          const usaDate = moment(dateString, 'L LT', true);
-          const euroAmDate = moment(dateString, 'DD.MM.YYYY LT', true);
-          const euro24hDate = moment(dateString, 'DD.MM.YYYY HH.mm', true);
-          const eurodotDate = moment(dateString, 'DD.MM.YYYY HH:mm', true);
-          const minusDate = moment(dateString, 'YYYY-MM-DD HH:mm', true);
-          const slashDate = moment(dateString, 'DD/MM/YYYY HH.mm', true);
-          const dotDate = moment(dateString, 'DD/MM/YYYY HH:mm', true);
-          const brezhonegDate = moment(dateString, 'DD/MM/YYYY h[e]mm A', true);
-          const hrvatskiDate = moment(dateString, 'DD. MM. YYYY H:mm', true);
-          const latviaDate = moment(dateString, 'YYYY.MM.DD. H:mm', true);
-          const nederlandsDate = moment(dateString, 'DD-MM-YYYY HH:mm', true);
-          // greekDate does not work: el Greek Ελληνικά ,
-          // it has date format DD/MM/YYYY h:mm MM like 20/06/2021 11:15 MM
-          // where MM is maybe some text like AM/PM ?
-          // Also some other languages that have non-ascii characters in dates
-          // do not work.
-          const greekDate = moment(dateString, 'DD/MM/YYYY h:mm A', true);
-          const macedonianDate = moment(dateString, 'D.MM.YYYY H:mm', true);
+          // Try to parse different date formats using native Date parsing
+          const formats = [
+            'YYYY-MM-DD HH:mm',
+            'MM/DD/YYYY HH:mm',
+            'DD.MM.YYYY HH:mm',
+            'DD/MM/YYYY HH:mm',
+            'DD-MM-YYYY HH:mm'
+          ];
+          
+          let parsedDate = null;
+          for (const format of formats) {
+            parsedDate = parseDate(dateString, [format], true);
+            if (parsedDate) break;
+          }
+          
+          // Fallback to native Date parsing
+          if (!parsedDate) {
+            parsedDate = new Date(dateString);
+          }
 
-          if (usaDate.isValid()) {
+          if (isValidDate(parsedDate)) {
             // if active poker -  store it
             if (this.currentData().getPokerQuestion()) {
               this._storeDate(usaDate.toDate());
@@ -1463,17 +1856,17 @@ BlazeComponent.extendComponent({
     ];
   }
   _storeDate(newDate) {
-    this.card.setPokerEnd(newDate);
+    Meteor.call('cards.setPokerEnd', this.card._id, newDate);
   }
   _deleteDate() {
-    this.card.unsetPokerEnd();
+    Meteor.call('cards.unsetPokerEnd', this.card._id);
   }
 }.register('editPokerEndDatePopup'));
 
 // Close the card details pane by pressing escape
 EscapeActions.register(
   'detailsPane',
-  () => {
+  async () => {
     // if card description diverges from database due to editing
     // ask user whether changes should be applied
     if (ReactiveCache.getCurrentUser()) {
@@ -1481,7 +1874,7 @@ EscapeActions.register(
         currentDescription = document.getElementsByClassName("editor js-new-description-input").item(0)
         if (currentDescription?.value && !(currentDescription.value === Utils.getCurrentCard().getDescription())) {
           if (confirm(TAPi18n.__('rescue-card-description-dialogue'))) {
-            Utils.getCurrentCard().setDescription(document.getElementsByClassName("editor js-new-description-input").item(0).value);
+            await Utils.getCurrentCard().setDescription(document.getElementsByClassName("editor js-new-description-input").item(0).value);
             // Save it!
             console.log(document.getElementsByClassName("editor js-new-description-input").item(0).value);
             console.log("current description", Utils.getCurrentCard().getDescription());
@@ -1538,10 +1931,15 @@ Template.cardAssigneesPopup.helpers({
   },
 
   members() {
-    return _.sortBy(Template.instance().members.get(),'fullname');
+    const members = Template.instance().members.get();
+    const uniqueMembers = _.uniq(members, 'userId');
+    return _.sortBy(uniqueMembers, member => {
+      const user = ReactiveCache.getUser(member.userId);
+      return user ? user.profile.fullname : '';
+    });
   },
 
-  user() {
+  userData() {
     return ReactiveCache.getUser(this.userId);
   },
 });

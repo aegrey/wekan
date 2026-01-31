@@ -1,14 +1,92 @@
 import { ReactiveCache, ReactiveMiniMongoIndex } from '/imports/reactiveCache';
-import { SyncedCron } from 'meteor/percolate:synced-cron';
+import { Random } from 'meteor/random';
+import { SyncedCron } from 'meteor/quave:synced-cron';
 import { TAPi18n } from '/imports/i18n';
 import ImpersonatedUsers from './impersonatedUsers';
-import { Index, MongoDBEngine } from 'meteor/easy:search';
+// import { Index, MongoDBEngine } from 'meteor/easy:search'; // Temporarily disabled due to compatibility issues
 
 // Sandstorm context is detected using the METEOR_SETTINGS environment variable
 // in the package definition.
 const isSandstorm =
   Meteor.settings && Meteor.settings.public && Meteor.settings.public.sandstorm;
 Users = Meteor.users;
+
+// Public-board collapse persistence helpers (cookie-based for non-logged-in users)
+if (Meteor.isClient) {
+  const readCookieMap = name => {
+    try {
+      const stored = typeof document !== 'undefined' ? document.cookie : '';
+      const cookies = stored.split(';').map(c => c.trim());
+      let json = '{}';
+      for (const c of cookies) {
+        if (c.startsWith(name + '=')) {
+          json = decodeURIComponent(c.substring(name.length + 1));
+          break;
+        }
+      }
+      return JSON.parse(json || '{}');
+    } catch (e) {
+      console.warn('Error parsing collapse cookie', name, e);
+      return {};
+    }
+  };
+
+  const writeCookieMap = (name, data) => {
+    try {
+      const serialized = encodeURIComponent(JSON.stringify(data || {}));
+      const maxAge = 60 * 60 * 24 * 365; // 1 year
+      document.cookie = `${name}=${serialized}; path=/; max-age=${maxAge}`;
+    } catch (e) {
+      console.warn('Error writing collapse cookie', name, e);
+    }
+  };
+
+  Users.getPublicCollapsedList = (boardId, listId) => {
+    if (!boardId || !listId) return null;
+    const data = readCookieMap('wekan-collapsed-lists');
+    if (data[boardId] && typeof data[boardId][listId] === 'boolean') {
+      return data[boardId][listId];
+    }
+    return null;
+  };
+
+  Users.setPublicCollapsedList = (boardId, listId, collapsed) => {
+    if (!boardId || !listId) return false;
+    const data = readCookieMap('wekan-collapsed-lists');
+    if (!data[boardId]) data[boardId] = {};
+    data[boardId][listId] = !!collapsed;
+    writeCookieMap('wekan-collapsed-lists', data);
+    return true;
+  };
+
+  Users.getPublicCollapsedSwimlane = (boardId, swimlaneId) => {
+    if (!boardId || !swimlaneId) return null;
+    const data = readCookieMap('wekan-collapsed-swimlanes');
+    if (data[boardId] && typeof data[boardId][swimlaneId] === 'boolean') {
+      return data[boardId][swimlaneId];
+    }
+    return null;
+  };
+
+  Users.setPublicCollapsedSwimlane = (boardId, swimlaneId, collapsed) => {
+    if (!boardId || !swimlaneId) return false;
+    const data = readCookieMap('wekan-collapsed-swimlanes');
+    if (!data[boardId]) data[boardId] = {};
+    data[boardId][swimlaneId] = !!collapsed;
+    writeCookieMap('wekan-collapsed-swimlanes', data);
+    return true;
+  };
+
+  Users.getPublicCardCollapsed = () => {
+    const data = readCookieMap('wekan-card-collapsed');
+    return typeof data.state === 'boolean' ? data.state : null;
+  };
+
+  Users.setPublicCardCollapsed = collapsed => {
+    writeCookieMap('wekan-card-collapsed', { state: !!collapsed });
+    return true;
+  };
+}
 
 const allowedSortValues = [
   '-modifiedAt',
@@ -172,9 +250,9 @@ Users.attachSchema(
       type: Boolean,
       optional: true,
     },
-    'profile.hideCheckedItems': {
+    'profile.GreyIcons': {
       /**
-       * does the user want to hide checked checklist items?
+       * per-user preference to render unicode icons in grey
        */
       type: Boolean,
       optional: true,
@@ -186,16 +264,23 @@ Users.attachSchema(
       type: Boolean,
       optional: true,
     },
-    'profile.customFieldsGrid': {
+    'profile.cardCollapsed': {
       /**
-       * has user at card Custom Fields have Grid (false) or one per row (true) layout?
+       * has user collapsed the card details?
        */
       type: Boolean,
       optional: true,
     },
-    'profile.hiddenSystemMessages': {
+    'profile.showActivities': {
       /**
-       * does the user want to hide system messages?
+       * does the user want to show activities in card details?
+       */
+      type: Boolean,
+      optional: true,
+    },
+    'profile.customFieldsGrid': {
+      /**
+       * has user at card Custom Fields have Grid (false) or one per row (true) layout?
        */
       type: Boolean,
       optional: true,
@@ -213,6 +298,29 @@ Users.attachSchema(
        */
       type: String,
       optional: true,
+    },
+    'profile.boardWorkspacesTree': {
+      /**
+       * Per-user spaces tree for All Boards page
+       */
+      type: Array,
+      optional: true,
+    },
+    'profile.boardWorkspacesTree.$': {
+      /**
+       * Space node: { id: String, name: String, children: Array<node> }
+       */
+      type: Object,
+      blackbox: true,
+      optional: true,
+    },
+    'profile.boardWorkspaceAssignments': {
+      /**
+       * Per-user map of boardId -> spaceId
+       */
+      type: Object,
+      optional: true,
+      blackbox: true,
     },
     'profile.invitedBoards': {
       /**
@@ -383,6 +491,7 @@ Users.attachSchema(
         'board-view-swimlanes',
         'board-view-lists',
         'board-view-cal',
+        'board-view-gantt',
       ],
     },
     'profile.listSortBy': {
@@ -431,6 +540,24 @@ Users.attachSchema(
       defaultValue: {},
       blackbox: true,
     },
+    'profile.listConstraints': {
+      /**
+       * User-specified constraint of each list (or nothing if default).
+       * profile[boardId][listId] = constraint;
+       */
+      type: Object,
+      defaultValue: {},
+      blackbox: true,
+    },
+    'profile.autoWidthBoards': {
+      /**
+       * User-specified flag for enabling auto-width for boards (false is the default).
+       * profile[boardId][listId] = constraint;
+       */
+      type: Object,
+      defaultValue: {},
+      blackbox: true,
+    },
     'profile.swimlaneHeights': {
       /**
        * User-specified heights of each swimlane (or nothing if default).
@@ -439,6 +566,79 @@ Users.attachSchema(
       type: Object,
       defaultValue: {},
       blackbox: true,
+    },
+    'profile.collapsedLists': {
+      /**
+       * Per-user collapsed state for lists.
+       * profile[boardId][listId] = true|false
+       */
+      type: Object,
+      defaultValue: {},
+      blackbox: true,
+    },
+    'profile.collapsedSwimlanes': {
+      /**
+       * Per-user collapsed state for swimlanes.
+       * profile[boardId][swimlaneId] = true|false
+       */
+      type: Object,
+      defaultValue: {},
+      blackbox: true,
+    },
+    'profile.keyboardShortcuts': {
+      /**
+       * User-specified state of keyboard shortcut activation.
+       */
+      type: Boolean,
+      defaultValue: false,
+    },
+    'profile.verticalScrollbars': {
+      /**
+       * User-specified state of vertical scrollbars visibility.
+       */
+      type: Boolean,
+      defaultValue: true,
+    },
+    'profile.showWeekOfYear': {
+      /**
+       * User-specified state of week-of-year in date displays.
+       */
+      type: Boolean,
+      defaultValue: true,
+    },
+    'profile.dateFormat': {
+      /**
+       * User-specified date format for displaying dates (includes time HH:MM).
+       */
+      type: String,
+      optional: true,
+      allowedValues: ['YYYY-MM-DD', 'DD-MM-YYYY', 'MM-DD-YYYY'],
+      defaultValue: 'YYYY-MM-DD',
+    },
+    'profile.zoomLevel': {
+      /**
+       * User-specified zoom level for board view (1.0 = 100%, 1.5 = 150%, etc.)
+       */
+      type: Number,
+      defaultValue: 1.0,
+      min: 0.5,
+      max: 3.0,
+    },
+    'profile.mobileMode': {
+      /**
+       * User-specified mobile/desktop mode toggle
+       */
+      type: Boolean,
+      defaultValue: false,
+    },
+    'profile.cardZoom': {
+      /**
+       * User-specified zoom level for card details (1.0 = 100%, 1.5 = 150%, etc.)
+       */
+      type: Number,
+      defaultValue: 1.0,
+      min: 0.5,
+      max: 3.0,
     },
     services: {
       /**
@@ -519,67 +719,122 @@ Users.attachSchema(
   }),
 );
 
+// Security helpers for user updates
+export const USER_UPDATE_ALLOWED_EXACT = ['username', 'profile', 'modifiedAt'];
+export const USER_UPDATE_ALLOWED_PREFIXES = ['profile.'];
+export const USER_UPDATE_FORBIDDEN_PREFIXES = [
+  'services',
+  'emails',
+  'roles',
+  'isAdmin',
+  'createdThroughApi',
+  'orgs',
+  'teams',
+  'loginDisabled',
+  'authenticationMethod',
+  'sessionData',
+];
+
+export function isUserUpdateAllowed(fields) {
+  const result = fields.every((f) =>
+    USER_UPDATE_ALLOWED_EXACT.includes(f) || USER_UPDATE_ALLOWED_PREFIXES.some((p) => f.startsWith(p))
+  );
+  return result;
+}
+
+export function hasForbiddenUserUpdateField(fields) {
+  const result = fields.some((f) => USER_UPDATE_FORBIDDEN_PREFIXES.some((p) => f === p || f.startsWith(p + '.')));
+  return result;
+}
+
 Users.allow({
-  update(userId, doc) {
-    const user = ReactiveCache.getUser(userId) || ReactiveCache.getCurrentUser();
-    if (user?.isAdmin)
-      return true;
-    if (!user) {
+  update(userId, doc, fields /*, modifier */) {
+    // Only the owner can update, and only for allowed fields
+    if (!userId || doc._id !== userId) {
       return false;
     }
-    return doc._id === userId;
+    if (!Array.isArray(fields) || fields.length === 0) {
+      return false;
+    }
+    // Disallow if any forbidden field present
+    if (hasForbiddenUserUpdateField(fields)) {
+      return false;
+    }
+    // Allow only username and profile.*
+    const allowed = isUserUpdateAllowed(fields);
+    return allowed;
   },
   remove(userId, doc) {
-    const adminsNumber = ReactiveCache.getUsers({
-      isAdmin: true,
-    }).length;
-    const isAdmin = ReactiveCache.getUser(
-      {
-        _id: userId,
-      },
-      {
-        fields: {
-          isAdmin: 1,
-        },
-      },
-    );
-
-    // Prevents remove of the only one administrator
-    if (adminsNumber === 1 && isAdmin && userId === doc._id) {
-      return false;
-    }
-
-    // If it's the user or an admin
-    return userId === doc._id || isAdmin;
+    // Disable direct client-side user removal for security
+    // All user removal should go through the secure server method 'removeUser'
+    // This prevents IDOR vulnerabilities and ensures proper authorization checks
+    return false;
   },
   fetch: [],
 });
 
-// Non-Admin users can not change to Admin
+// Deny any attempts to touch forbidden fields from client updates
 Users.deny({
-  update(userId, board, fieldNames) {
-    return _.contains(fieldNames, 'isAdmin') && !ReactiveCache.getCurrentUser().isAdmin;
+  update(userId, doc, fields /*, modifier */) {
+    const denied = hasForbiddenUserUpdateField(fields);
+    return denied;
   },
   fetch: [],
 });
 
+
+// Custom MongoDB engine that enforces field restrictions
+// TODO: Re-enable when easy:search compatibility is fixed
+// class SecureMongoDBEngine extends MongoDBEngine {
+//   getSearchCursor(searchObject, options) {
+//     // Always enforce field projection to prevent data leakage
+//     const secureProjection = {
+//       _id: 1,
+//       username: 1,
+//       'profile.fullname': 1,
+//       'profile.avatarUrl': 1,
+//     };
+
+//     // Override any projection passed in options
+//     const secureOptions = {
+//       ...options,
+//       projection: secureProjection,
+//     };
+
+//     return super.getSearchCursor(searchObject, secureOptions);
+//   }
+// }
 
 // Search a user in the complete server database by its name, username or emails adress. This
 // is used for instance to add a new user to a board.
-UserSearchIndex = new Index({
-  collection: Users,
-  fields: ['username', 'profile.fullname', 'profile.avatarUrl'],
-  allowedFields: ['username', 'profile.fullname', 'profile.avatarUrl'],
-  engine: new MongoDBEngine({
-    fields: function (searchObject, options) {
-      return {
+// TODO: Fix easy:search compatibility issue - temporarily disabled
+// UserSearchIndex = new Index({
+//   collection: Users,
+//   fields: ['username', 'profile.fullname', 'profile.avatarUrl'],
+//   engine: new MongoDBEngine(),
+// });
+
+// Temporary fallback - create a simple search index object
+UserSearchIndex = {
+  search: function(query, options) {
+    // Simple fallback search using MongoDB find
+    const searchRegex = new RegExp(query, 'i');
+    return Users.find({
+      $or: [
+        { username: searchRegex },
+        { 'profile.fullname': searchRegex }
+      ]
+    }, {
+      fields: {
+        _id: 1,
         username: 1,
         'profile.fullname': 1,
-        'profile.avatarUrl': 1,
-      };
-    },
-  }),
-});
+        'profile.avatarUrl': 1
+      },
+      limit: options?.limit || 20
+    });
+  }
+};
 
 Users.safeFields = {
   _id: 1,
@@ -587,6 +842,9 @@ Users.safeFields = {
   'profile.fullname': 1,
   'profile.avatarUrl': 1,
   'profile.initials': 1,
+  'profile.zoomLevel': 1,
+  'profile.mobileMode': 1,
+  'profile.GreyIcons': 1,
   orgs: 1,
   teams: 1,
   authenticationMethod: 1,
@@ -622,6 +880,16 @@ if (Meteor.isClient) {
     isCommentOnly() {
       const board = Utils.getCurrentBoard();
       return board && board.hasCommentOnly(this._id);
+    },
+
+    isReadOnly() {
+      const board = Utils.getCurrentBoard();
+      return board && board.hasReadOnly(this._id);
+    },
+
+    isReadAssignedOnly() {
+      const board = Utils.getCurrentBoard();
+      return board && board.hasReadAssignedOnly(this._id);
     },
 
     isNotWorker() {
@@ -687,14 +955,11 @@ Users.helpers({
     return '';
   },
   orgIdsUserBelongs() {
+    let ret = '';
     if (this.orgs) {
-      return this.orgs
-        .map(function (org) {
-          return org.orgId;
-        })
-        .join(',');
+      ret = this.orgs.map(org => org.orgId).join(',');
     }
-    return '';
+    return ret;
   },
   teamsUserBelongs() {
     if (this.teams) {
@@ -708,27 +973,20 @@ Users.helpers({
     return '';
   },
   teamIdsUserBelongs() {
+    let ret = '';
     if (this.teams) {
-      return this.teams
-        .map(function (team) {
-          return team.teamId;
-        })
-        .join(',');
+      ret = this.teams.map(team => team.teamId).join(',');
     }
-    return '';
+    return ret;
   },
   boards() {
-    return Boards.userBoards(this._id, null, {}, { sort: { sort: 1 } });
+    // Fetch unsorted; sorting is per-user via profile.boardSortIndex
+    return Boards.userBoards(this._id, null, {}, {});
   },
 
   starredBoards() {
     const { starredBoards = [] } = this.profile || {};
-    return Boards.userBoards(
-      this._id,
-      false,
-      { _id: { $in: starredBoards } },
-      { sort: { sort: 1 } },
-    );
+    return Boards.userBoards(this._id, false, { _id: { $in: starredBoards } }, {});
   },
 
   hasStarred(boardId) {
@@ -736,14 +994,14 @@ Users.helpers({
     return _.contains(starredBoards, boardId);
   },
 
+  isAutoWidth(boardId) {
+    const { autoWidthBoards = {} } = this.profile || {};
+    return autoWidthBoards[boardId] === true;
+  },
+
   invitedBoards() {
     const { invitedBoards = [] } = this.profile || {};
-    return Boards.userBoards(
-      this._id,
-      false,
-      { _id: { $in: invitedBoards } },
-      { sort: { sort: 1 } },
-    );
+    return Boards.userBoards(this._id, false, { _id: { $in: invitedBoards } }, {});
   },
 
   isInvitedTo(boardId) {
@@ -762,6 +1020,32 @@ Users.helpers({
     }
     return ret;
   },
+  /**
+   * Get per-user board sort index for a board, or null when not set
+   */
+  getBoardSortIndex(boardId) {
+    const mapping = (this.profile && this.profile.boardSortIndex) || {};
+    const v = mapping[boardId];
+    return typeof v === 'number' ? v : null;
+  },
+  /**
+   * Sort an array of boards by per-user mapping; fallback to title asc
+   */
+  sortBoardsForUser(boardsArr) {
+    const mapping = (this.profile && this.profile.boardSortIndex) || {};
+    const arr = (boardsArr || []).slice();
+    arr.sort((a, b) => {
+      const ia = typeof mapping[a._id] === 'number' ? mapping[a._id] : Number.POSITIVE_INFINITY;
+      const ib = typeof mapping[b._id] === 'number' ? mapping[b._id] : Number.POSITIVE_INFINITY;
+      if (ia !== ib) return ia - ib;
+      const ta = (a.title || '').toLowerCase();
+      const tb = (b.title || '').toLowerCase();
+      if (ta < tb) return -1;
+      if (ta > tb) return 1;
+      return 0;
+    });
+    return arr;
+  },
   hasSortBy() {
     // if use doesn't have dragHandle, then we can let user to choose sort list by different order
     return !this.hasShowDesktopDragHandles();
@@ -777,7 +1061,7 @@ Users.helpers({
   },
 
   getListWidths() {
-    const { listWidths = {} } = this.profile || {};
+    const { listWidths = {}, } = this.profile || {};
     return listWidths;
   },
   getListWidth(boardId, listId) {
@@ -786,6 +1070,18 @@ Users.helpers({
       return listWidths[boardId][listId];
     } else {
       return 270; //TODO(mark-i-m): default?
+    }
+  },
+  getListConstraints() {
+    const { listConstraints = {} } = this.profile || {};
+    return listConstraints;
+  },
+  getListConstraint(boardId, listId) {
+    const listConstraints = this.getListConstraints();
+    if (listConstraints[boardId] && listConstraints[boardId][listId]) {
+      return listConstraints[boardId][listId];
+    } else {
+      return 550;
     }
   },
 
@@ -799,6 +1095,52 @@ Users.helpers({
       return swimlaneHeights[boardId][listId];
     } else {
       return -1;
+    }
+  },
+
+  getSwimlaneHeightFromStorage(boardId, swimlaneId) {
+    // For logged-in users, get from profile
+    if (this._id) {
+      return this.getSwimlaneHeight(boardId, swimlaneId);
+    }
+    
+    // For non-logged-in users, get from localStorage
+    try {
+      const stored = localStorage.getItem('wekan-swimlane-heights');
+      if (stored) {
+        const heights = JSON.parse(stored);
+        if (heights[boardId] && heights[boardId][swimlaneId]) {
+          return heights[boardId][swimlaneId];
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading swimlane heights from localStorage:', e);
+    }
+    
+    return -1;
+  },
+
+  setSwimlaneHeightToStorage(boardId, swimlaneId, height) {
+    // For logged-in users, save to profile
+    if (this._id) {
+      return this.setSwimlaneHeight(boardId, swimlaneId, height);
+    }
+    
+    // For non-logged-in users, save to localStorage
+    try {
+      const stored = localStorage.getItem('wekan-swimlane-heights');
+      let heights = stored ? JSON.parse(stored) : {};
+      
+      if (!heights[boardId]) {
+        heights[boardId] = {};
+      }
+      heights[boardId][swimlaneId] = height;
+      
+      localStorage.setItem('wekan-swimlane-heights', JSON.stringify(heights));
+      return true;
+    } catch (e) {
+      console.warn('Error saving swimlane height to localStorage:', e);
+      return false;
     }
   },
 
@@ -866,14 +1208,9 @@ Users.helpers({
     return profile.showDesktopDragHandles || false;
   },
 
-  hasHideCheckedItems() {
+  hasGreyIcons() {
     const profile = this.profile || {};
-    return profile.hideCheckedItems || false;
-  },
-
-  hasHiddenSystemMessages() {
-    const profile = this.profile || {};
-    return profile.hiddenSystemMessages || false;
+    return profile.GreyIcons || false;
   },
 
   hasCustomFieldsGrid() {
@@ -884,6 +1221,11 @@ Users.helpers({
   hasCardMaximized() {
     const profile = this.profile || {};
     return profile.cardMaximized || false;
+  },
+
+  hasShowActivities() {
+    const profile = this.profile || {};
+    return profile.showActivities || false;
   },
 
   hasHiddenMinicardLabelText() {
@@ -940,6 +1282,11 @@ Users.helpers({
     return profile.startDayOfWeek;
   },
 
+  getDateFormat() {
+    const profile = this.profile || {};
+    return profile.dateFormat || 'YYYY-MM-DD';
+  },
+
   getTemplatesBoardId() {
     return (this.profile || {}).templatesBoardId;
   },
@@ -949,282 +1296,728 @@ Users.helpers({
     return 'templates';
   },
 
+  isKeyboardShortcuts() {
+    const { keyboardShortcuts = true } = this.profile || {};
+    return keyboardShortcuts;
+  },
+
+  isVerticalScrollbars() {
+    const { verticalScrollbars = true } = this.profile || {};
+    return verticalScrollbars;
+  },
+
+  isShowWeekOfYear() {
+    const { showWeekOfYear = true } = this.profile || {};
+    return showWeekOfYear;
+  },
+
   remove() {
     User.remove({
       _id: this._id,
     });
   },
-});
 
-Users.mutations({
-  /** set the confirmed board id/swimlane id/list id of a board
-   * @param boardId the current board id
-   * @param options an object with the confirmed field values
-   */
-  setMoveAndCopyDialogOption(boardId, options) {
+  getListWidthFromStorage(boardId, listId) {
+    // For logged-in users, get from profile
+    if (this._id) {
+      return this.getListWidth(boardId, listId);
+    }
+    
+    // For non-logged-in users, get from validated localStorage
+    if (typeof localStorage !== 'undefined' && typeof getValidatedLocalStorageData === 'function') {
+      try {
+        const widths = getValidatedLocalStorageData('wekan-list-widths', validators.listWidths);
+        if (widths[boardId] && widths[boardId][listId]) {
+          const width = widths[boardId][listId];
+          // Validate it's a valid number
+          if (validators.isValidNumber(width, 100, 1000)) {
+            return width;
+          }
+        }
+      } catch (e) {
+        console.warn('Error reading list widths from localStorage:', e);
+      }
+    }
+    
+    return 270; // Return default width
+  },
+
+  setListWidthToStorage(boardId, listId, width) {
+    // For logged-in users, save to profile
+    if (this._id) {
+      return this.setListWidth(boardId, listId, width);
+    }
+    
+    // Validate width before storing
+    if (!validators.isValidNumber(width, 100, 1000)) {
+      console.warn('Invalid list width:', width);
+      return false;
+    }
+    
+    // For non-logged-in users, save to validated localStorage
+    if (typeof localStorage !== 'undefined' && typeof setValidatedLocalStorageData === 'function') {
+      try {
+        const widths = getValidatedLocalStorageData('wekan-list-widths', validators.listWidths);
+        
+        if (!widths[boardId]) {
+          widths[boardId] = {};
+        }
+        widths[boardId][listId] = width;
+        
+        return setValidatedLocalStorageData('wekan-list-widths', widths, validators.listWidths);
+      } catch (e) {
+        console.warn('Error saving list width to localStorage:', e);
+        return false;
+      }
+    }
+    return false;
+  },
+
+  getListConstraintFromStorage(boardId, listId) {
+    // For logged-in users, get from profile
+    if (this._id) {
+      return this.getListConstraint(boardId, listId);
+    }
+    
+    // For non-logged-in users, get from localStorage
+    try {
+      const stored = localStorage.getItem('wekan-list-constraints');
+      if (stored) {
+        const constraints = JSON.parse(stored);
+        if (constraints[boardId] && constraints[boardId][listId]) {
+          return constraints[boardId][listId];
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading list constraints from localStorage:', e);
+    }
+    
+    return 550; // Return default constraint instead of -1
+  },
+
+  setListConstraintToStorage(boardId, listId, constraint) {
+    // For logged-in users, save to profile
+    if (this._id) {
+      return this.setListConstraint(boardId, listId, constraint);
+    }
+    
+    // For non-logged-in users, save to localStorage
+    try {
+      const stored = localStorage.getItem('wekan-list-constraints');
+      let constraints = stored ? JSON.parse(stored) : {};
+      
+      if (!constraints[boardId]) {
+        constraints[boardId] = {};
+      }
+      constraints[boardId][listId] = constraint;
+      
+      localStorage.setItem('wekan-list-constraints', JSON.stringify(constraints));
+      return true;
+    } catch (e) {
+      console.warn('Error saving list constraint to localStorage:', e);
+      return false;
+    }
+  },
+
+  getSwimlaneHeightFromStorage(boardId, swimlaneId) {
+    // For logged-in users, get from profile
+    if (this._id) {
+      return this.getSwimlaneHeight(boardId, swimlaneId);
+    }
+    
+    // For non-logged-in users, get from localStorage
+    try {
+      const stored = localStorage.getItem('wekan-swimlane-heights');
+      if (stored) {
+        const heights = JSON.parse(stored);
+        if (heights[boardId] && heights[boardId][swimlaneId]) {
+          return heights[boardId][swimlaneId];
+        }
+      }
+    } catch (e) {
+      console.warn('Error reading swimlane heights from localStorage:', e);
+    }
+    
+    return -1; // Return -1 if not found
+  },
+
+  setSwimlaneHeightToStorage(boardId, swimlaneId, height) {
+    // For logged-in users, save to profile
+    if (this._id) {
+      return this.setSwimlaneHeight(boardId, swimlaneId, height);
+    }
+    
+    // For non-logged-in users, save to localStorage
+    try {
+      const stored = localStorage.getItem('wekan-swimlane-heights');
+      let heights = stored ? JSON.parse(stored) : {};
+      
+      if (!heights[boardId]) {
+        heights[boardId] = {};
+      }
+      heights[boardId][swimlaneId] = height;
+      
+      localStorage.setItem('wekan-swimlane-heights', JSON.stringify(heights));
+      return true;
+    } catch (e) {
+      console.warn('Error saving swimlane height to localStorage:', e);
+      return false;
+    }
+  },
+  // Per-user collapsed state helpers for lists/swimlanes
+  getCollapsedList(boardId, listId) {
+    const { collapsedLists = {} } = this.profile || {};
+    if (collapsedLists[boardId] && typeof collapsedLists[boardId][listId] === 'boolean') {
+      return collapsedLists[boardId][listId];
+    }
+    return null;
+  },
+  getCollapsedSwimlane(boardId, swimlaneId) {
+    const { collapsedSwimlanes = {} } = this.profile || {};
+    if (collapsedSwimlanes[boardId] && typeof collapsedSwimlanes[boardId][swimlaneId] === 'boolean') {
+      return collapsedSwimlanes[boardId][swimlaneId];
+    }
+    return null;
+  },
+  setCollapsedListToStorage(boardId, listId, collapsed) {
+    // Logged-in users: save to profile
+    if (this._id) {
+      return this.setCollapsedList(boardId, listId, collapsed);
+    }
+    // Public users: save to cookie
+    try {
+      const name = 'wekan-collapsed-lists';
+      const stored = (typeof document !== 'undefined') ? document.cookie : '';
+      const cookies = stored.split(';').map(c => c.trim());
+      let json = '{}';
+      for (const c of cookies) {
+        if (c.startsWith(name + '=')) {
+          json = decodeURIComponent(c.substring(name.length + 1));
+          break;
+        }
+      }
+      let data = {};
+      try { data = JSON.parse(json || '{}'); } catch (e) { data = {}; }
+      if (!data[boardId]) data[boardId] = {};
+      data[boardId][listId] = !!collapsed;
+      const serialized = encodeURIComponent(JSON.stringify(data));
+      const maxAge = 60 * 60 * 24 * 365; // 1 year
+      document.cookie = `${name}=${serialized}; path=/; max-age=${maxAge}`;
+      return true;
+    } catch (e) {
+      console.warn('Error saving collapsed list to cookie:', e);
+      return false;
+    }
+  },
+  getCollapsedListFromStorage(boardId, listId) {
+    // Logged-in users: read from profile
+    if (this._id) {
+      const v = this.getCollapsedList(boardId, listId);
+      return v;
+    }
+    // Public users: read from cookie
+    try {
+      const name = 'wekan-collapsed-lists';
+      const stored = (typeof document !== 'undefined') ? document.cookie : '';
+      const cookies = stored.split(';').map(c => c.trim());
+      let json = '{}';
+      for (const c of cookies) {
+        if (c.startsWith(name + '=')) {
+          json = decodeURIComponent(c.substring(name.length + 1));
+          break;
+        }
+      }
+      const data = JSON.parse(json || '{}');
+      if (data[boardId] && typeof data[boardId][listId] === 'boolean') {
+        return data[boardId][listId];
+      }
+    } catch (e) {
+      console.warn('Error reading collapsed list from cookie:', e);
+    }
+    return null;
+  },
+  setCollapsedSwimlaneToStorage(boardId, swimlaneId, collapsed) {
+    // Logged-in users: save to profile
+    if (this._id) {
+      return this.setCollapsedSwimlane(boardId, swimlaneId, collapsed);
+    }
+    // Public users: save to cookie
+    try {
+      const name = 'wekan-collapsed-swimlanes';
+      const stored = (typeof document !== 'undefined') ? document.cookie : '';
+      const cookies = stored.split(';').map(c => c.trim());
+      let json = '{}';
+      for (const c of cookies) {
+        if (c.startsWith(name + '=')) {
+          json = decodeURIComponent(c.substring(name.length + 1));
+          break;
+        }
+      }
+      let data = {};
+      try { data = JSON.parse(json || '{}'); } catch (e) { data = {}; }
+      if (!data[boardId]) data[boardId] = {};
+      data[boardId][swimlaneId] = !!collapsed;
+      const serialized = encodeURIComponent(JSON.stringify(data));
+      const maxAge = 60 * 60 * 24 * 365; // 1 year
+      document.cookie = `${name}=${serialized}; path=/; max-age=${maxAge}`;
+      return true;
+    } catch (e) {
+      console.warn('Error saving collapsed swimlane to cookie:', e);
+      return false;
+    }
+  },
+  getCollapsedSwimlaneFromStorage(boardId, swimlaneId) {
+    // Logged-in users: read from profile
+    if (this._id) {
+      const v = this.getCollapsedSwimlane(boardId, swimlaneId);
+      return v;
+    }
+    // Public users: read from cookie
+    try {
+      const name = 'wekan-collapsed-swimlanes';
+      const stored = (typeof document !== 'undefined') ? document.cookie : '';
+      const cookies = stored.split(';').map(c => c.trim());
+      let json = '{}';
+      for (const c of cookies) {
+        if (c.startsWith(name + '=')) {
+          json = decodeURIComponent(c.substring(name.length + 1));
+          break;
+        }
+      }
+      const data = JSON.parse(json || '{}');
+      if (data[boardId] && typeof data[boardId][swimlaneId] === 'boolean') {
+        return data[boardId][swimlaneId];
+      }
+    } catch (e) {
+      console.warn('Error reading collapsed swimlane from cookie:', e);
+    }
+    return null;
+  },
+
+  async setMoveAndCopyDialogOption(boardId, options) {
     let currentOptions = this.getMoveAndCopyDialogOptions();
     currentOptions[boardId] = options;
-    return {
-      $set: {
-        'profile.moveAndCopyDialog': currentOptions,
-      },
-    };
+    return await Users.updateAsync(this._id, { $set: { 'profile.moveAndCopyDialog': currentOptions } });
   },
-  /** set the confirmed board id/swimlane id/list id/card id of a board (move checklist)
-   * @param boardId the current board id
-   * @param options an object with the confirmed field values
-   */
-  setMoveChecklistDialogOption(boardId, options) {
+
+  async setMoveChecklistDialogOption(boardId, options) {
     let currentOptions = this.getMoveChecklistDialogOptions();
     currentOptions[boardId] = options;
-    return {
-      $set: {
-        'profile.moveChecklistDialog': currentOptions,
-      },
-    };
+    return await Users.updateAsync(this._id, { $set: { 'profile.moveChecklistDialog': currentOptions } });
   },
-  /** set the confirmed board id/swimlane id/list id/card id of a board (copy checklist)
-   * @param boardId the current board id
-   * @param options an object with the confirmed field values
-   */
-  setCopyChecklistDialogOption(boardId, options) {
+
+  async setCopyChecklistDialogOption(boardId, options) {
     let currentOptions = this.getCopyChecklistDialogOptions();
     currentOptions[boardId] = options;
-    return {
-      $set: {
-        'profile.copyChecklistDialog': currentOptions,
-      },
-    };
+    return await Users.updateAsync(this._id, { $set: { 'profile.copyChecklistDialog': currentOptions } });
   },
-  toggleBoardStar(boardId) {
+
+  async toggleBoardStar(boardId) {
     const queryKind = this.hasStarred(boardId) ? '$pull' : '$addToSet';
-    return {
-      [queryKind]: {
-        'profile.starredBoards': boardId,
-      },
-    };
+    return await Users.updateAsync(this._id, { [queryKind]: { 'profile.starredBoards': boardId } });
   },
 
-  addInvite(boardId) {
-    return {
-      $addToSet: {
-        'profile.invitedBoards': boardId,
-      },
-    };
+  async setBoardSortIndex(boardId, sortIndex) {
+    const mapping = (this.profile && this.profile.boardSortIndex) || {};
+    mapping[boardId] = sortIndex;
+    return await Users.updateAsync(this._id, { $set: { 'profile.boardSortIndex': mapping } });
   },
 
-  removeInvite(boardId) {
-    return {
-      $pull: {
-        'profile.invitedBoards': boardId,
-      },
-    };
+  async toggleAutoWidth(boardId) {
+    const { autoWidthBoards = {} } = this.profile || {};
+    autoWidthBoards[boardId] = !autoWidthBoards[boardId];
+    return await Users.updateAsync(this._id, { $set: { 'profile.autoWidthBoards': autoWidthBoards } });
   },
 
-  addTag(tag) {
-    return {
-      $addToSet: {
-        'profile.tags': tag,
-      },
-    };
+  async toggleKeyboardShortcuts() {
+    const { keyboardShortcuts = true } = this.profile || {};
+    return await Users.updateAsync(this._id, { $set: { 'profile.keyboardShortcuts': !keyboardShortcuts } });
   },
 
-  removeTag(tag) {
-    return {
-      $pull: {
-        'profile.tags': tag,
-      },
-    };
+  async toggleVerticalScrollbars() {
+    const { verticalScrollbars = true } = this.profile || {};
+    return await Users.updateAsync(this._id, { $set: { 'profile.verticalScrollbars': !verticalScrollbars } });
   },
 
-  toggleTag(tag) {
-    if (this.hasTag(tag)) this.removeTag(tag);
-    else this.addTag(tag);
+  async toggleShowWeekOfYear() {
+    const { showWeekOfYear = true } = this.profile || {};
+    return await Users.updateAsync(this._id, { $set: { 'profile.showWeekOfYear': !showWeekOfYear } });
   },
 
-  setListSortBy(value) {
-    return {
-      $set: {
-        'profile.listSortBy': value,
-      },
-    };
+  async addInvite(boardId) {
+    return await Users.updateAsync(this._id, { $addToSet: { 'profile.invitedBoards': boardId } });
   },
 
-  setName(value) {
-    return {
-      $set: {
-        'profile.fullname': value,
-      },
-    };
+  async removeInvite(boardId) {
+    return await Users.updateAsync(this._id, { $pull: { 'profile.invitedBoards': boardId } });
   },
 
-  toggleDesktopHandles(value = false) {
-    return {
-      $set: {
-        'profile.showDesktopDragHandles': !value,
-      },
-    };
+  async addTag(tag) {
+    return await Users.updateAsync(this._id, { $addToSet: { 'profile.tags': tag } });
   },
 
-  toggleHideCheckedItems() {
-    const value = this.hasHideCheckedItems();
-    return {
-      $set: {
-        'profile.hideCheckedItems': !value,
-      },
-    };
+  async removeTag(tag) {
+    return await Users.updateAsync(this._id, { $pull: { 'profile.tags': tag } });
   },
 
-  toggleSystem(value = false) {
-    return {
-      $set: {
-        'profile.hiddenSystemMessages': !value,
-      },
-    };
+  async toggleTag(tag) {
+    if (this.hasTag(tag)) {
+      return await this.removeTag(tag);
+    } else {
+      return await this.addTag(tag);
+    }
   },
 
-  toggleFieldsGrid(value = false) {
-    return {
-      $set: {
-        'profile.customFieldsGrid': !value,
-      },
-    };
+  async setListSortBy(value) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.listSortBy': value } });
   },
 
-  toggleCardMaximized(value = false) {
-    return {
-      $set: {
-        'profile.cardMaximized': !value,
-      },
-    };
+  async setName(value) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.fullname': value } });
   },
 
-  toggleLabelText(value = false) {
-    return {
-      $set: {
-        'profile.hiddenMinicardLabelText': !value,
-      },
-    };
-  },
-  toggleRescueCardDescription(value = false) {
-    return {
-      $set: {
-        'profile.rescueCardDescription': !value,
-      },
-    };
+  async toggleDesktopHandles(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.showDesktopDragHandles': !value } });
   },
 
-  addNotification(activityId) {
-    return {
-      $addToSet: {
-        'profile.notifications': {
-          activity: activityId,
-        },
-      },
-    };
+  async toggleFieldsGrid(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.customFieldsGrid': !value } });
   },
 
-  removeNotification(activityId) {
-    return {
-      $pull: {
-        'profile.notifications': {
-          activity: activityId,
-        },
-      },
-    };
+  async toggleCardMaximized(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.cardMaximized': !value } });
   },
 
-  addEmailBuffer(text) {
-    return {
-      $addToSet: {
-        'profile.emailBuffer': text,
-      },
-    };
+  async toggleCardCollapsed(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.cardCollapsed': !value } });
   },
 
-  clearEmailBuffer() {
-    return {
-      $set: {
-        'profile.emailBuffer': [],
-      },
-    };
+  async toggleShowActivities(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.showActivities': !value } });
   },
 
-  setAvatarUrl(avatarUrl) {
-    return {
-      $set: {
-        'profile.avatarUrl': avatarUrl,
-      },
-    };
+  async toggleLabelText(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.hiddenMinicardLabelText': !value } });
   },
 
-  setShowCardsCountAt(limit) {
-    return {
-      $set: {
-        'profile.showCardsCountAt': limit,
-      },
-    };
+  async toggleRescueCardDescription(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.rescueCardDescription': !value } });
   },
 
-  setStartDayOfWeek(startDay) {
-    return {
-      $set: {
-        'profile.startDayOfWeek': startDay,
-      },
-    };
+  async toggleGreyIcons(value = false) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.GreyIcons': !value } });
   },
 
-  setBoardView(view) {
-    return {
-      $set: {
-        'profile.boardView': view,
-      },
-    };
+  async addNotification(activityId) {
+    return await Users.updateAsync(this._id, {
+      $addToSet: { 'profile.notifications': { activity: activityId, read: null } },
+    });
   },
 
-  setListWidth(boardId, listId, width) {
+  async removeNotification(activityId) {
+    return await Users.updateAsync(this._id, {
+      $pull: { 'profile.notifications': { activity: activityId } },
+    });
+  },
+
+  async addEmailBuffer(text) {
+    return await Users.updateAsync(this._id, { $addToSet: { 'profile.emailBuffer': text } });
+  },
+
+  async clearEmailBuffer() {
+    return await Users.updateAsync(this._id, { $set: { 'profile.emailBuffer': [] } });
+  },
+
+  async setAvatarUrl(avatarUrl) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.avatarUrl': avatarUrl } });
+  },
+
+  async setShowCardsCountAt(limit) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.showCardsCountAt': limit } });
+  },
+
+  async setStartDayOfWeek(startDay) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.startDayOfWeek': startDay } });
+  },
+
+  async setDateFormat(dateFormat) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.dateFormat': dateFormat } });
+  },
+
+  async setBoardView(view) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.boardView': view } });
+  },
+
+  async setListWidth(boardId, listId, width) {
     let currentWidths = this.getListWidths();
-    if (!currentWidths[boardId]) {
-      currentWidths[boardId] = {};
-    }
+    if (!currentWidths[boardId]) currentWidths[boardId] = {};
     currentWidths[boardId][listId] = width;
-    return {
-      $set: {
-        'profile.listWidths': currentWidths,
-      },
-    };
+    return await Users.updateAsync(this._id, { $set: { 'profile.listWidths': currentWidths } });
   },
 
-  setSwimlaneHeight(boardId, swimlaneId, height) {
+  async setListConstraint(boardId, listId, constraint) {
+    let currentConstraints = this.getListConstraints();
+    if (!currentConstraints[boardId]) currentConstraints[boardId] = {};
+    currentConstraints[boardId][listId] = constraint;
+    return await Users.updateAsync(this._id, { $set: { 'profile.listConstraints': currentConstraints } });
+  },
+
+  async setSwimlaneHeight(boardId, swimlaneId, height) {
     let currentHeights = this.getSwimlaneHeights();
-    if (!currentHeights[boardId]) {
-      currentHeights[boardId] = {};
-    }
+    if (!currentHeights[boardId]) currentHeights[boardId] = {};
     currentHeights[boardId][swimlaneId] = height;
-    return {
-      $set: {
-        'profile.swimlaneHeights': currentHeights,
-      },
-    };
+    return await Users.updateAsync(this._id, { $set: { 'profile.swimlaneHeights': currentHeights } });
+  },
+
+  async setCollapsedList(boardId, listId, collapsed) {
+    const current = (this.profile && this.profile.collapsedLists) || {};
+    if (!current[boardId]) current[boardId] = {};
+    current[boardId][listId] = !!collapsed;
+    return await Users.updateAsync(this._id, { $set: { 'profile.collapsedLists': current } });
+  },
+
+  async setCollapsedSwimlane(boardId, swimlaneId, collapsed) {
+    const current = (this.profile && this.profile.collapsedSwimlanes) || {};
+    if (!current[boardId]) current[boardId] = {};
+    current[boardId][swimlaneId] = !!collapsed;
+    return await Users.updateAsync(this._id, { $set: { 'profile.collapsedSwimlanes': current } });
+  },
+
+  async setZoomLevel(level) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.zoomLevel': level } });
+  },
+
+  async setMobileMode(enabled) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.mobileMode': enabled } });
+  },
+
+  async setCardZoom(level) {
+    return await Users.updateAsync(this._id, { $set: { 'profile.cardZoom': level } });
   },
 });
 
 Meteor.methods({
+  // Secure user removal method with proper authorization checks
+  removeUser(targetUserId) {
+    check(targetUserId, String);
+
+    const currentUserId = Meteor.userId();
+    if (!currentUserId) {
+      throw new Meteor.Error('not-authorized', 'User must be logged in');
+    }
+
+    const currentUser = ReactiveCache.getUser(currentUserId);
+    if (!currentUser) {
+      throw new Meteor.Error('not-authorized', 'Current user not found');
+    }
+
+    const targetUser = ReactiveCache.getUser(targetUserId);
+    if (!targetUser) {
+      throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    // Check if user is trying to delete themselves
+    if (currentUserId === targetUserId) {
+      // User can delete themselves
+      Users.remove(targetUserId);
+      return { success: true, message: 'User deleted successfully' };
+    }
+
+    // Check if current user is admin
+    if (!currentUser.isAdmin) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can delete other users');
+    }
+
+    // Check if target user is the last admin
+    const adminsNumber = ReactiveCache.getUsers({
+      isAdmin: true,
+    }).length;
+
+    if (adminsNumber === 1 && targetUser.isAdmin) {
+      throw new Meteor.Error('not-authorized', 'Cannot delete the last administrator');
+    }
+
+    // Admin can delete non-admin users
+    Users.remove(targetUserId);
+    return { success: true, message: 'User deleted successfully' };
+  },
+  editUser(targetUserId, updateData) {
+    check(targetUserId, String);
+    check(updateData, Object);
+
+    const currentUserId = Meteor.userId();
+    if (!currentUserId) {
+      throw new Meteor.Error('not-authorized', 'User must be logged in');
+    }
+
+    const currentUser = ReactiveCache.getUser(currentUserId);
+    if (!currentUser) {
+      throw new Meteor.Error('not-authorized', 'Current user not found');
+    }
+
+    // Check if current user is admin
+    if (!currentUser.isAdmin) {
+      throw new Meteor.Error('not-authorized', 'Only administrators can edit other users');
+    }
+
+    const targetUser = ReactiveCache.getUser(targetUserId);
+    if (!targetUser) {
+      throw new Meteor.Error('user-not-found', 'Target user not found');
+    }
+
+    // Only allow updating specific fields
+    const updateObject = {};
+    if (updateData.fullname !== undefined) {
+      updateObject['profile.fullname'] = updateData.fullname;
+    }
+    if (updateData.initials !== undefined) {
+      updateObject['profile.initials'] = updateData.initials;
+    }
+    if (updateData.isAdmin !== undefined) {
+      updateObject.isAdmin = updateData.isAdmin;
+    }
+    if (updateData.loginDisabled !== undefined) {
+      updateObject.loginDisabled = updateData.loginDisabled;
+    }
+    if (updateData.authenticationMethod !== undefined) {
+      updateObject.authenticationMethod = updateData.authenticationMethod;
+    }
+    if (updateData.importUsernames !== undefined) {
+      updateObject.importUsernames = updateData.importUsernames;
+    }
+    if (updateData.teams !== undefined) {
+      updateObject.teams = updateData.teams;
+    }
+    if (updateData.orgs !== undefined) {
+      updateObject.orgs = updateData.orgs;
+    }
+
+    Users.update(targetUserId, { $set: updateObject });
+  },
   setListSortBy(value) {
     check(value, String);
     ReactiveCache.getCurrentUser().setListSortBy(value);
+  },
+  setAvatarUrl(avatarUrl) {
+    check(avatarUrl, String);
+    if (!this.userId) {
+      throw new Meteor.Error('not-logged-in', 'User must be logged in');
+    }
+    Users.update(this.userId, { $set: { 'profile.avatarUrl': avatarUrl } });
+  },
+  toggleBoardStar(boardId) {
+    check(boardId, String);
+    if (!this.userId) {
+      throw new Meteor.Error('not-logged-in', 'User must be logged in');
+    }
+    const user = Users.findOne(this.userId);
+    if (!user) {
+      throw new Meteor.Error('user-not-found', 'User not found');
+    }
+    
+    // Check if board is already starred
+    const starredBoards = (user.profile && user.profile.starredBoards) || [];
+    const isStarred = starredBoards.includes(boardId);
+    
+    // Build update object
+    const updateObject = isStarred 
+      ? { $pull: { 'profile.starredBoards': boardId } }
+      : { $addToSet: { 'profile.starredBoards': boardId } };
+    
+    Users.update(this.userId, updateObject);
+  },
+  toggleGreyIcons(value) {
+    if (!this.userId) {
+      throw new Meteor.Error('not-logged-in', 'User must be logged in');
+    }
+    if (value !== undefined) check(value, Boolean);
+
+    const user = Users.findOne(this.userId);
+    if (!user) {
+      throw new Meteor.Error('user-not-found', 'User not found');
+    }
+
+    const current = (user.profile && user.profile.GreyIcons) || false;
+    const newValue = value !== undefined ? value : !current;
+
+    Users.update(this.userId, { $set: { 'profile.GreyIcons': newValue } });
+    return newValue;
   },
   toggleDesktopDragHandles() {
     const user = ReactiveCache.getCurrentUser();
     user.toggleDesktopHandles(user.hasShowDesktopDragHandles());
   },
+  // Spaces: create a new space under parentId (or root when null)
+  createWorkspace({ parentId = null, name }) {
+    check(parentId, Match.OneOf(String, null));
+    check(name, String);
+    if (!this.userId) throw new Meteor.Error('not-logged-in');
+    const user = Users.findOne(this.userId) || {};
+    const tree = (user.profile && user.profile.boardWorkspacesTree) ? EJSON.clone(user.profile.boardWorkspacesTree) : [];
+
+    const newNode = { id: Random.id(), name, children: [] };
+
+    if (!parentId) {
+      tree.push(newNode);
+    } else {
+      const insertInto = (nodes) => {
+        for (let n of nodes) {
+          if (n.id === parentId) {
+            n.children = n.children || [];
+            n.children.push(newNode);
+            return true;
+          }
+          if (n.children && n.children.length) {
+            if (insertInto(n.children)) return true;
+          }
+        }
+        return false;
+      };
+      insertInto(tree);
+    }
+
+    Users.update(this.userId, { $set: { 'profile.boardWorkspacesTree': tree } });
+    return newNode;
+  },
+  // Spaces: set entire tree (used for drag-drop reordering)
+  setWorkspacesTree(newTree) {
+    check(newTree, Array);
+    if (!this.userId) throw new Meteor.Error('not-logged-in');
+    Users.update(this.userId, { $set: { 'profile.boardWorkspacesTree': newTree } });
+    return true;
+  },
+  // Assign a board to a space
+  assignBoardToWorkspace(boardId, spaceId) {
+    check(boardId, String);
+    check(spaceId, String);
+    if (!this.userId) throw new Meteor.Error('not-logged-in');
+    
+    const user = Users.findOne(this.userId);
+    const assignments = user.profile?.boardWorkspaceAssignments || {};
+    assignments[boardId] = spaceId;
+    
+    Users.update(this.userId, {
+      $set: { 'profile.boardWorkspaceAssignments': assignments }
+    });
+    return true;
+  },
+  // Remove a board assignment (moves it back to Remaining)
+  unassignBoardFromWorkspace(boardId) {
+    check(boardId, String);
+    if (!this.userId) throw new Meteor.Error('not-logged-in');
+    
+    const user = Users.findOne(this.userId);
+    const assignments = user.profile?.boardWorkspaceAssignments || {};
+    delete assignments[boardId];
+    
+    Users.update(this.userId, {
+      $set: { 'profile.boardWorkspaceAssignments': assignments }
+    });
+    return true;
+  },
   toggleHideCheckedItems() {
     const user = ReactiveCache.getCurrentUser();
     user.toggleHideCheckedItems();
-  },
-  toggleSystemMessages() {
-    const user = ReactiveCache.getCurrentUser();
-    user.toggleSystem(user.hasHiddenSystemMessages());
   },
   toggleCustomFieldsGrid() {
     const user = ReactiveCache.getCurrentUser();
@@ -1233,6 +2026,11 @@ Meteor.methods({
   toggleCardMaximized() {
     const user = ReactiveCache.getCurrentUser();
     user.toggleCardMaximized(user.hasCardMaximized());
+  },
+  setCardCollapsed(value) {
+    check(value, Boolean);
+    if (!this.userId) throw new Meteor.Error('not-logged-in');
+    Users.update(this.userId, { $set: { 'profile.cardCollapsed': value } });
   },
   toggleMinicardLabelText() {
     const user = ReactiveCache.getCurrentUser();
@@ -1250,61 +2048,113 @@ Meteor.methods({
     check(startDay, Number);
     ReactiveCache.getCurrentUser().setStartDayOfWeek(startDay);
   },
-  applyListWidth(boardId, listId, width) {
+  changeDateFormat(dateFormat) {
+    check(dateFormat, String);
+    ReactiveCache.getCurrentUser().setDateFormat(dateFormat);
+  },
+  applyListWidth(boardId, listId, width, constraint) {
     check(boardId, String);
     check(listId, String);
     check(width, Number);
-    const user = Meteor.user();
+    check(constraint, Number);
+    const user = ReactiveCache.getCurrentUser();
     user.setListWidth(boardId, listId, width);
+    user.setListConstraint(boardId, listId, constraint);
+  },
+  setListCollapsedState(boardId, listId, collapsed) {
+    check(boardId, String);
+    check(listId, String);
+    check(collapsed, Boolean);
+    if (!this.userId) {
+      throw new Meteor.Error('not-logged-in', 'User must be logged in');
+    }
+    const user = Users.findOne(this.userId);
+    if (!user) {
+      throw new Meteor.Error('user-not-found', 'User not found');
+    }
+    const current = (user.profile && user.profile.collapsedLists) || {};
+    if (!current[boardId]) current[boardId] = {};
+    current[boardId][listId] = !!collapsed;
+    Users.update(this.userId, {
+      $set: {
+        'profile.collapsedLists': current,
+      },
+    });
   },
   applySwimlaneHeight(boardId, swimlaneId, height) {
     check(boardId, String);
     check(swimlaneId, String);
     check(height, Number);
-    const user = Meteor.user();
+    const user = ReactiveCache.getCurrentUser();
     user.setSwimlaneHeight(boardId, swimlaneId, height);
+  },
+
+  setSwimlaneCollapsedState(boardId, swimlaneId, collapsed) {
+    check(boardId, String);
+    check(swimlaneId, String);
+    check(collapsed, Boolean);
+    if (!this.userId) {
+      throw new Meteor.Error('not-logged-in', 'User must be logged in');
+    }
+    const user = Users.findOne(this.userId);
+    if (!user) {
+      throw new Meteor.Error('user-not-found', 'User not found');
+    }
+    const current = (user.profile && user.profile.collapsedSwimlanes) || {};
+    if (!current[boardId]) current[boardId] = {};
+    current[boardId][swimlaneId] = !!collapsed;
+    Users.update(this.userId, {
+      $set: {
+        'profile.collapsedSwimlanes': current,
+      },
+    });
+  },
+
+  applySwimlaneHeightToStorage(boardId, swimlaneId, height) {
+    check(boardId, String);
+    check(swimlaneId, String);
+    check(height, Number);
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      user.setSwimlaneHeightToStorage(boardId, swimlaneId, height);
+    }
+    // For non-logged-in users, the client-side code will handle localStorage
+  },
+
+  applyListWidthToStorage(boardId, listId, width, constraint) {
+    check(boardId, String);
+    check(listId, String);
+    check(width, Number);
+    check(constraint, Number);
+    const user = ReactiveCache.getCurrentUser();
+    if (user) {
+      user.setListWidthToStorage(boardId, listId, width);
+      user.setListConstraintToStorage(boardId, listId, constraint);
+    }
+    // For non-logged-in users, the client-side code will handle localStorage
+  },
+  setZoomLevel(level) {
+    check(level, Number);
+    const user = ReactiveCache.getCurrentUser();
+    user.setZoomLevel(level);
+  },
+  setMobileMode(enabled) {
+    check(enabled, Boolean);
+    const user = ReactiveCache.getCurrentUser();
+    user.setMobileMode(enabled);
+  },
+  setBoardView(view) {
+    check(view, String);
+    const user = ReactiveCache.getCurrentUser();
+    if (!user) {
+      throw new Meteor.Error('not-authorized', 'Must be logged in');
+    }
+    user.setBoardView(view);
   },
 });
 
 if (Meteor.isServer) {
   Meteor.methods({
-    setAllUsersHideSystemMessages() {
-      if (ReactiveCache.getCurrentUser()?.isAdmin) {
-        // If setting is missing, add it
-        Users.update(
-          {
-            'profile.hiddenSystemMessages': {
-              $exists: false,
-            },
-          },
-          {
-            $set: {
-              'profile.hiddenSystemMessages': true,
-            },
-          },
-          {
-            multi: true,
-          },
-        );
-        // If setting is false, set it to true
-        Users.update(
-          {
-            'profile.hiddenSystemMessages': false,
-          },
-          {
-            $set: {
-              'profile.hiddenSystemMessages': true,
-            },
-          },
-          {
-            multi: true,
-          },
-        );
-        return true;
-      } else {
-        return false;
-      }
-    },
     setCreateUser(
       fullname,
       username,
@@ -1513,14 +2363,9 @@ if (Meteor.isServer) {
       }
       const inviter = ReactiveCache.getCurrentUser();
       const board = ReactiveCache.getBoard(boardId);
-      const allowInvite =
-        inviter &&
-        board &&
-        board.members &&
-        _.contains(_.pluck(board.members, 'userId'), inviter._id) &&
-        _.where(board.members, {
-          userId: inviter._id,
-        })[0].isActive;
+      const member = _.find(board.members, function(member) { return member.userId === inviter._id; });
+      if (!member) throw new Meteor.Error('error-board-notAMember');
+      const allowInvite = member.isActive;
       // GitHub issue 2060
       //_.where(board.members, { userId: inviter._id })[0].isAdmin;
       if (!allowInvite) throw new Meteor.Error('error-board-notAMember');
@@ -1576,73 +2421,72 @@ if (Meteor.isServer) {
         user = ReactiveCache.getUser(newUserId);
       }
 
-      board.addMember(user._id);
-      user.addInvite(boardId);
+      const memberIndex = board.members.findIndex(m => m.userId === user._id);
+      if (memberIndex >= 0) {
+        Boards.update(boardId, { $set: { [`members.${memberIndex}.isActive`]: true, modifiedAt: new Date() } });
+      } else {
+        Boards.update(boardId, { $push: { members: { userId: user._id, isAdmin: false, isActive: true, isNoComments: false, isCommentOnly: false, isWorker: false, isNormalAssignedOnly: false, isCommentAssignedOnly: false, isReadOnly: false, isReadAssignedOnly: false } }, $set: { modifiedAt: new Date() } });
+      }
+      Users.update(user._id, { $push: { 'profile.invitedBoards': boardId } });
 
       //Check if there is a subtasks board
       if (board.subtasksDefaultBoardId) {
         const subBoard = ReactiveCache.getBoard(board.subtasksDefaultBoardId);
         //If there is, also add user to that board
         if (subBoard) {
-          subBoard.addMember(user._id);
-          user.addInvite(subBoard._id);
+          const subMemberIndex = subBoard.members.findIndex(m => m.userId === user._id);
+          if (subMemberIndex >= 0) {
+            Boards.update(board.subtasksDefaultBoardId, { $set: { [`members.${subMemberIndex}.isActive`]: true, modifiedAt: new Date() } });
+          } else {
+            Boards.update(board.subtasksDefaultBoardId, { $push: { members: { userId: user._id, isAdmin: false, isActive: true, isNoComments: false, isCommentOnly: false, isWorker: false, isNormalAssignedOnly: false, isCommentAssignedOnly: false, isReadOnly: false, isReadAssignedOnly: false } }, $set: { modifiedAt: new Date() } });
+          }
+          Users.update(user._id, { $push: { 'profile.invitedBoards': subBoard._id } });
         }
-      }
+      }        try {
+          const fullName =
+            inviter.profile !== undefined &&
+              inviter.profile.fullname !== undefined
+              ? inviter.profile.fullname
+              : '';
+          const userFullName =
+            user.profile !== undefined && user.profile.fullname !== undefined
+              ? user.profile.fullname
+              : '';
+          const params = {
+            user:
+              userFullName != ''
+                ? userFullName + ' (' + user.username + ' )'
+                : user.username,
+            inviter:
+              fullName != ''
+                ? fullName + ' (' + inviter.username + ' )'
+                : inviter.username,
+            board: board.title,
+            url: board.absoluteUrl(),
+          };
+          // Get the recipient user's language preference for the email
+          const lang = user.getLanguage();
 
-      try {
-        const fullName =
-          inviter.profile !== undefined &&
-            inviter.profile.fullname !== undefined
-            ? inviter.profile.fullname
-            : '';
-        const userFullName =
-          user.profile !== undefined && user.profile.fullname !== undefined
-            ? user.profile.fullname
-            : '';
-        const params = {
-          user:
-            userFullName != ''
-              ? userFullName + ' (' + user.username + ' )'
-              : user.username,
-          inviter:
-            fullName != ''
-              ? fullName + ' (' + inviter.username + ' )'
-              : inviter.username,
-          board: board.title,
-          url: board.absoluteUrl(),
-        };
-        const lang = user.getLanguage();
-
-        /*
-        if (process.env.MAIL_SERVICE !== '') {
-          let transporter = nodemailer.createTransport({
-            service: process.env.MAIL_SERVICE,
-            auth: {
-              user: process.env.MAIL_SERVICE_USER,
-              pass: process.env.MAIL_SERVICE_PASSWORD
-            },
-          })
-          let info = transporter.sendMail({
-            to: user.emails[0].address.toLowerCase(),
-            from: Accounts.emailTemplates.from,
-            subject: TAPi18n.__('email-invite-subject', params, lang),
-            text: TAPi18n.__('email-invite-text', params, lang),
-          })
-        } else {
-          Email.send({
-            to: user.emails[0].address.toLowerCase(),
-            from: Accounts.emailTemplates.from,
-            subject: TAPi18n.__('email-invite-subject', params, lang),
-            text: TAPi18n.__('email-invite-text', params, lang),
-          });
-        }
-*/
-        Email.send({
-          to: user.emails[0].address.toLowerCase(),
-          from: Accounts.emailTemplates.from,
-          subject: TAPi18n.__('email-invite-subject', params, lang),
-          text: TAPi18n.__('email-invite-text', params, lang),
-        });
+          // Add code to send invitation with EmailLocalization
+          if (typeof EmailLocalization !== 'undefined') {
+            EmailLocalization.sendEmail({
+              to: user.emails[0].address,
+              from: Accounts.emailTemplates.from,
+              subject: 'email-invite-subject',
+              text: 'email-invite-text',
+              params: params,
+              language: lang,
+              userId: user._id
+            });
+          } else {
+            // Fallback if EmailLocalization is not available
+            Email.send({
+              to: user.emails[0].address,
+              from: Accounts.emailTemplates.from,
+              subject: TAPi18n.__('email-invite-subject', params, lang),
+              text: TAPi18n.__('email-invite-text', params, lang),
+            });
+          }
       } catch (e) {
         throw new Meteor.Error('email-fail', e.message);
       }
@@ -1881,11 +2725,11 @@ const addCronJob = _.debounce(
 
 if (Meteor.isServer) {
   // Let mongoDB ensure username unicity
-  Meteor.startup(() => {
-    allowedSortValues.forEach((value) => {
-      Lists._collection.createIndex(value);
-    });
-    Users._collection.createIndex({
+  Meteor.startup(async () => {
+    for (const value of allowedSortValues) {
+      await Lists._collection.createIndexAsync(value);
+    }
+    await Users._collection.createIndexAsync({
       modifiedAt: -1,
     });
     // Avatar URLs from CollectionFS to Meteor-Files, at users collection avatarUrl field:
@@ -2011,7 +2855,7 @@ if (Meteor.isServer) {
         const future3 = new Future();
         Boards.insert(
           {
-            title: TAPi18n.__('templates'),
+            title: TAPi18n && TAPi18n.i18n ? TAPi18n.__('templates') : 'Templates',
             permission: 'private',
             type: 'template-container',
           },
@@ -2027,7 +2871,7 @@ if (Meteor.isServer) {
             // Insert the card templates swimlane
             Swimlanes.insert(
               {
-                title: TAPi18n.__('card-templates-swimlane'),
+                title: TAPi18n && TAPi18n.i18n ? TAPi18n.__('card-templates-swimlane') : 'Card Templates',
                 boardId,
                 sort: 1,
                 type: 'template-container',
@@ -2047,7 +2891,7 @@ if (Meteor.isServer) {
             // Insert the list templates swimlane
             Swimlanes.insert(
               {
-                title: TAPi18n.__('list-templates-swimlane'),
+                title: TAPi18n && TAPi18n.i18n ? TAPi18n.__('list-templates-swimlane') : 'List Templates',
                 boardId,
                 sort: 2,
                 type: 'template-container',
@@ -2067,7 +2911,7 @@ if (Meteor.isServer) {
             // Insert the board templates swimlane
             Swimlanes.insert(
               {
-                title: TAPi18n.__('board-templates-swimlane'),
+                title: TAPi18n && TAPi18n.i18n ? TAPi18n.__('board-templates-swimlane') : 'Board Templates',
                 boardId,
                 sort: 3,
                 type: 'template-container',
@@ -2135,7 +2979,12 @@ if (Meteor.isServer) {
       } else {
         invitationCode.boardsToBeInvited.forEach((boardId) => {
           const board = ReactiveCache.getBoard(boardId);
-          board.addMember(doc._id);
+          const memberIndex = board.members.findIndex(m => m.userId === doc._id);
+          if (memberIndex >= 0) {
+            Boards.update(boardId, { $set: { [`members.${memberIndex}.isActive`]: true } });
+          } else {
+            Boards.update(boardId, { $push: { members: { userId: doc._id, isAdmin: false, isActive: true, isNoComments: false, isCommentOnly: false, isWorker: false, isNormalAssignedOnly: false, isCommentAssignedOnly: false, isReadOnly: false, isReadAssignedOnly: false } } });
+          }
         });
         if (!doc.profile) {
           doc.profile = {};
@@ -2321,7 +3170,7 @@ if (Meteor.isServer) {
    * @return_type {_id: string,
    *               title: string}
    */
-  JsonRoutes.add('PUT', '/api/users/:userId', function (req, res) {
+  JsonRoutes.add('PUT', '/api/users/:userId', async function (req, res) {
     try {
       Authentication.checkUserId(req.userId);
       const id = req.params.userId;
@@ -2331,7 +3180,7 @@ if (Meteor.isServer) {
       });
       if (data !== undefined) {
         if (action === 'takeOwnership') {
-          data = ReactiveCache.getBoards(
+          const boards = ReactiveCache.getBoards(
             {
               'members.userId': id,
               'members.isAdmin': true,
@@ -2341,16 +3190,18 @@ if (Meteor.isServer) {
                 sort: 1 /* boards default sorting */,
               },
             },
-          ).map(function (board) {
+          );
+          data = [];
+          for (const board of boards) {
             if (board.hasMember(req.userId)) {
-              board.removeMember(req.userId);
+              await board.removeMember(req.userId);
             }
             board.changeOwnership(id, req.userId);
-            return {
+            data.push({
               _id: board._id,
               title: board.title,
-            };
-          });
+            });
+          }
         } else {
           if (action === 'disableLogin' && id !== req.userId) {
             Users.update(
@@ -2409,6 +3260,10 @@ if (Meteor.isServer) {
    * @param {boolean} isNoComments disable comments
    * @param {boolean} isCommentOnly only enable comments
    * @param {boolean} isWorker is the user a board worker
+   * @param {boolean} isNormalAssignedOnly only see assigned cards (Normal permission)
+   * @param {boolean} isCommentAssignedOnly only comment on assigned cards
+   * @param {boolean} isReadOnly read-only access (no comments or editing)
+   * @param {boolean} isReadAssignedOnly read-only assigned cards only
    * @return_type {_id: string,
    *               title: string}
    */
@@ -2421,27 +3276,40 @@ if (Meteor.isServer) {
         const userId = req.params.userId;
         const boardId = req.params.boardId;
         const action = req.body.action;
-        const { isAdmin, isNoComments, isCommentOnly, isWorker } = req.body;
+        const { isAdmin, isNoComments, isCommentOnly, isWorker, isNormalAssignedOnly, isCommentAssignedOnly, isReadOnly, isReadAssignedOnly } = req.body;
         let data = ReactiveCache.getUser(userId);
         if (data !== undefined) {
           if (action === 'add') {
             data = ReactiveCache.getBoards({
               _id: boardId,
             }).map(function (board) {
-              if (!board.hasMember(userId)) {
-                board.addMember(userId);
+              const hasMember = board.members.some(m => m.userId === userId && m.isActive);
+              if (!hasMember) {
+                const memberIndex = board.members.findIndex(m => m.userId === userId);
+                if (memberIndex >= 0) {
+                  Boards.update(boardId, { $set: { [`members.${memberIndex}.isActive`]: true } });
+                } else {
+                  Boards.update(boardId, { $push: { members: { userId: userId, isAdmin: false, isActive: true, isNoComments: false, isCommentOnly: false, isWorker: false, isNormalAssignedOnly: false, isCommentAssignedOnly: false, isReadOnly: false, isReadAssignedOnly: false } } });
+                }
 
                 function isTrue(data) {
                   return data.toLowerCase() === 'true';
                 }
-                board.setMemberPermission(
-                  userId,
-                  isTrue(isAdmin),
-                  isTrue(isNoComments),
-                  isTrue(isCommentOnly),
-                  isTrue(isWorker),
-                  userId,
-                );
+                const memberIndex2 = board.members.findIndex(m => m.userId === userId);
+                if (memberIndex2 >= 0) {
+                  Boards.update(boardId, {
+                    $set: {
+                      [`members.${memberIndex2}.isAdmin`]: isTrue(isAdmin),
+                      [`members.${memberIndex2}.isNoComments`]: isTrue(isNoComments),
+                      [`members.${memberIndex2}.isCommentOnly`]: isTrue(isCommentOnly),
+                      [`members.${memberIndex2}.isWorker`]: isTrue(isWorker),
+                      [`members.${memberIndex2}.isNormalAssignedOnly`]: isTrue(isNormalAssignedOnly),
+                      [`members.${memberIndex2}.isCommentAssignedOnly`]: isTrue(isCommentAssignedOnly),
+                      [`members.${memberIndex2}.isReadOnly`]: isTrue(isReadOnly),
+                      [`members.${memberIndex2}.isReadAssignedOnly`]: isTrue(isReadAssignedOnly),
+                    }
+                  });
+                }
               }
               return {
                 _id: board._id,
@@ -2489,8 +3357,19 @@ if (Meteor.isServer) {
             data = ReactiveCache.getBoards({
               _id: boardId,
             }).map(function (board) {
-              if (board.hasMember(userId)) {
-                board.removeMember(userId);
+              const hasMember = board.members.some(m => m.userId === userId && m.isActive);
+              if (hasMember) {
+                const memberIndex = board.members.findIndex(m => m.userId === userId);
+                if (memberIndex >= 0) {
+                  const member = board.members[memberIndex];
+                  const activeAdmins = board.members.filter(m => m.isActive && m.isAdmin);
+                  const allowRemove = !member.isAdmin || activeAdmins.length > 1;
+                  if (!allowRemove) {
+                    Boards.update(boardId, { $set: { [`members.${memberIndex}.isActive`]: true } });
+                  } else {
+                    Boards.update(boardId, { $set: { [`members.${memberIndex}.isActive`]: false, [`members.${memberIndex}.isAdmin`]: false } });
+                  }
+                }
               }
               return {
                 _id: board._id,
@@ -2663,6 +3542,96 @@ if (Meteor.isServer) {
         code: 200,
         data: error,
       });
+    }
+  });
+
+  // Server-side method to sanitize user data for search results
+  const sanitizeUserForSearch = (userData) => {
+    // Only allow safe fields for user search
+    const safeFields = {
+      _id: 1,
+      username: 1,
+      'profile.fullname': 1,
+      'profile.avatarUrl': 1,
+      'profile.initials': 1,
+      'emails.address': 1,
+      'emails.verified': 1,
+      authenticationMethod: 1,
+      isAdmin: 1,
+      loginDisabled: 1,
+      teams: 1,
+      orgs: 1,
+    };
+
+    const sanitized = {};
+    for (const field of Object.keys(safeFields)) {
+      if (userData[field] !== undefined) {
+        sanitized[field] = userData[field];
+      }
+    }
+
+    // Ensure sensitive fields are never included
+    delete sanitized.services;
+    delete sanitized.resume;
+    delete sanitized.email;
+    delete sanitized.createdAt;
+    delete sanitized.modifiedAt;
+    delete sanitized.sessionData;
+    delete sanitized.importUsernames;
+
+    if (process.env.DEBUG === 'true') {
+      console.log('Sanitized user data for search:', Object.keys(sanitized));
+    }
+
+    return sanitized;
+  };
+
+  Meteor.methods({
+    sanitizeUserForSearch(userData) {
+      check(userData, Object);
+      return sanitizeUserForSearch(userData);
+    },
+    searchUsers(query, boardId) {
+      check(query, String);
+      check(boardId, String);
+
+      if (!this.userId) {
+        throw new Meteor.Error('not-logged-in', 'User must be logged in');
+      }
+
+      const currentUser = ReactiveCache.getCurrentUser();
+      const board = ReactiveCache.getBoard(boardId);
+
+      // Check if current user is a member of the board
+      const member = _.find(board.members, function(member) { return member.userId === currentUser._id; });
+      if (!member || !member.isActive) {
+        throw new Meteor.Error('not-authorized', 'User is not a member of this board');
+      }
+
+      if (query.length < 2) {
+        return [];
+      }
+
+      const searchRegex = new RegExp(query, 'i');
+      const users = ReactiveCache.getUsers({
+        $or: [
+          { username: searchRegex },
+          { 'profile.fullname': searchRegex },
+          { 'emails.address': searchRegex }
+        ]
+      }, {
+        fields: {
+          _id: 1,
+          username: 1,
+          'profile.fullname': 1,
+          'profile.avatarUrl': 1,
+          'profile.initials': 1,
+          'emails.address': 1
+        },
+        limit: 5
+      });
+
+      return users.map(user => sanitizeUserForSearch(user));
     }
   });
 }

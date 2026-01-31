@@ -1,22 +1,19 @@
 template(name="minicard")
-  .minicard(
+  .minicard.nodragscroll(
     class="{{#if isLinkedCard}}linked-card{{/if}}"
     class="{{#if isLinkedBoard}}linked-board{{/if}}"
     class="{{#if colorClass}}minicard-{{colorClass}}{{/if}}")
-    if canModifyCard
+    if canMoveCard
       if isTouchScreenOrShowDesktopDragHandles
-        a.fa.fa-navicon.minicard-details-menu-with-handle.js-open-minicard-details-menu(title="{{_ 'cardDetailsActionsPopup-title'}}")
         .handle
-          .fa.fa-arrows
-      else
-        a.fa.fa-navicon.minicard-details-menu.js-open-minicard-details-menu(title="{{_ 'cardDetailsActionsPopup-title'}}")
+          i.fa.fa-arrows
+    if canModifyCard
+      a.minicard-details-menu-with-handle.js-open-minicard-details-menu(title="{{_ 'cardDetailsActionsPopup-title'}}")
+        i.fa.fa-bars
     .dates
       if getReceived
-        unless getStart
-          unless getDue
-            unless getEnd
-              .date
-                +minicardReceivedDate
+        .date
+          +minicardReceivedDate
       if getStart
         .date
           +minicardStartDate
@@ -31,6 +28,26 @@ template(name="minicard")
     if cover
       if currentBoard.allowsCoverAttachmentOnMinicard
         .minicard-cover(style="background-image: url('{{cover.link 'original'}}?dummyReloadAfterSessionEstablished={{sess}}');")
+
+    // Upload progress indicator for drag-and-drop uploads
+    if hasActiveUploads
+      .minicard-upload-progress
+        .upload-progress-header
+          i.fa.fa-upload
+          span {{_ 'uploading-files'}} ({{uploadCount}})
+        each uploads
+          .upload-progress-item(class="{{#if $eq status 'error'}}upload-error{{/if}}")
+            .upload-progress-filename {{file.name}}
+            .upload-progress-bar
+              .upload-progress-fill(style="width: {{progress}}%")
+            if $eq status 'error'
+              .upload-progress-error
+                i.fa.fa-warning
+                span {{_ 'upload-failed'}}
+            else if $eq status 'completed'
+              .upload-progress-success
+                i.fa.fa-check                span {{_ 'upload-completed'}}
+
     .minicard-title
       if $eq 'prefix-with-full-path' currentBoard.presentParentTask
         .parent-prefix
@@ -40,23 +57,20 @@ template(name="minicard")
           | {{ parentCardName }}
       if isLinkedBoard
         a.js-linked-link
-          span.linked-icon.fa.fa-folder
+          span.linked-icon
+            i.fa.fa-folder
       else if isLinkedCard
         a.js-linked-link
-          span.linked-icon.fa.fa-id-card
+          span.linked-icon
+            i.fa.fa-id-card
       if getArchived
-        span.linked-icon.linked-archived.fa.fa-archive
+        span.linked-icon.linked-archived
+          i.fa.fa-archive
       +viewer
         if currentBoard.allowsCardNumber
           span.card-number
             | ##{getCardNumber}
         = getTitle
-      if $eq 'subtext-with-full-path' currentBoard.presentParentTask
-        .parent-subtext
-          | {{ parentString ' > ' }}
-      if $eq 'subtext-with-parent' currentBoard.presentParentTask
-        .parent-subtext
-          | {{ parentCardName }}
     if labels
       .minicard-labels(class="{{#if hiddenMinicardLabelText}}minicard-labels-no-text{{/if}}")
         each labels
@@ -112,12 +126,6 @@ template(name="minicard")
                     +viewer
                       = trueValue
 
-    .card-checklist-attachmentGalleries
-      .card-checklist-attachmentGallery.card-checklists
-        if currentBoard.allowsChecklists
-          //hr
-          //+checklists(cardId=_id showAtMinicard=true)
-
     if showAssignee
       if getAssignees
         .minicard-assignees.js-minicard-assignees
@@ -138,7 +146,8 @@ template(name="minicard")
       if canModifyCard
         if comments.length
           .badge(title="{{_ 'card-comments-title' comments.length }}")
-            span.badge-icon.fa.fa-comment-o.badge-comment.badge-text
+            span.badge-icon.badge-comment.badge-text
+              i.fa.fa-comment-o
               = ' '
               = comments.length
             //span.badge-comment.badge-text
@@ -146,88 +155,71 @@ template(name="minicard")
       if getDescription
         unless currentBoard.allowsDescriptionTextOnMinicard
           .badge.badge-state-image-only(title=getDescription)
-            span.badge-icon.fa.fa-align-left
+            span.badge-icon
+              i.fa.fa-file-text-o
       if getVoteQuestion
         .badge.badge-state-image-only(title=getVoteQuestion)
-          span.badge-icon.fa.fa-thumbs-up(class="{{#if voteState}}text-green{{/if}}")
+          span.badge-icon(class="{{#if voteState}}text-green{{/if}}")
+            i.fa.fa-thumbs-up
           span.badge-text {{ voteCountPositive }}
-          span.badge-icon.fa.fa-thumbs-down(class="{{#if $eq voteState false}}text-red{{/if}}")
+          span.badge-icon(class="{{#if $eq voteState false}}text-red{{/if}}")
+            i.fa.fa-thumbs-down
           span.badge-text {{ voteCountNegative }}
       if getPokerQuestion
         .badge.badge-state-image-only(title=getPokerQuestion)
-          span.badge-icon.fa.fa-check(class="{{#if pokerState}}text-green{{/if}}")
+          span.badge-icon(class="{{#if pokerState}}text-green{{/if}}")
+            i.fa.fa-check-square
           if expiredPoker
             span.badge-text {{ getPokerEstimation }}
       if attachments.length
         if currentBoard.allowsBadgeAttachmentOnMinicard
           .badge
-            span.badge-icon.fa.fa-paperclip
+            span.badge-icon
+              i.fa.fa-paperclip
             span.badge-text= attachments.length
-      if checklists.length
-        .badge(class="{{#if checklistFinished}}is-finished{{/if}}")
-          span.badge-icon.fa.fa-check-square-o
-          span.badge-text.check-list-text {{checklistFinishedCount}}/{{checklistItemCount}}
       if allSubtasks.count
         .badge
-          span.badge-icon.fa.fa-sitemap
+          span.badge-icon
+            i.fa.fa-globe
           span.badge-text.check-list-text {{subtasksFinishedCount}}/{{allSubtasksCount}}
           //{{subtasksFinishedCount}}/{{subtasksCount}} does not work because when a subtaks is archived, the count goes down
       if currentBoard.allowsCardSortingByNumber
         if currentBoard.allowsCardSortingByNumberOnMinicard
           .badge
-            span.badge-icon.fa.fa-sort
+            span.badge-icon
+              i.fa.fa-sort-numeric-asc
             span.badge-text.check-list-sort {{ sort }}
+    if shouldShowChecklistAtMinicard
+      each shouldShowChecklistAtMinicard
+        +minicardChecklist(checklist=. card=..)
     if currentBoard.allowsDescriptionTextOnMinicard
       if getDescription
         .minicard-description
           +viewer
             | {{ getDescription }}
+    if shouldShowListOnMinicard
+      .minicard-list-name
+        i.fa.fa-list
+        | {{ listName }}
+    if $eq 'subtext-with-full-path' currentBoard.presentParentTask
+      .parent-subtext
+        | {{ parentString ' > ' }}
+    if $eq 'subtext-with-parent' currentBoard.presentParentTask
+      .parent-subtext
+        | {{ parentCardName }}
 
 template(name="editCardSortOrderPopup")
   input.js-edit-card-sort-popup(type='text' autofocus value=sort dir="auto")
   .edit-controls.clearfix
     button.primary.confirm.js-submit-edit-card-sort-popup(type="submit") {{_ 'save'}}
 
-template(name="minicardDetailsActionsPopup")
-  ul.pop-over-list
-    if canModifyCard
-      li
-        a.js-move-card
-          i.fa.fa-arrow-right
-          | {{_ 'moveCardPopup-title'}}
-      li
-        a.js-copy-card
-          i.fa.fa-copy
-          | {{_ 'copyCardPopup-title'}}
-      hr
-      li
-        a.js-archive
-          i.fa.fa-arrow-right
-          i.fa.fa-archive
-          | {{_ 'archive-card'}}
-      hr
-      li
-        a.js-move-card-to-top
-          i.fa.fa-arrow-up
-          | {{_ 'moveCardToTop-title'}}
-      li
-        a.js-move-card-to-bottom
-          i.fa.fa-arrow-down
-          | {{_ 'moveCardToBottom-title'}}
-      hr
-      li
-        a.js-add-labels
-          i.fa.fa-tags
-          | {{_ 'card-edit-labels'}}
-      li
-        a.js-due-date
-          i.fa.fa-sign-in
-          | {{_ 'editCardDueDatePopup-title'}}
-      li
-        a.js-set-card-color
-          i.fa.fa-paint-brush
-          | {{_ 'setCardColorPopup-title'}}
-      li
-        a.js-link
-          i.fa.fa-link
-          | {{_ 'link-card'}}
+template(name="minicardChecklist")
+  .minicard-checklist
+    .checklist-header
+      .checklist-title= checklist.title
+      if canModifyCard
+        a.checklist-menu.js-open-checklist-menu(title="{{_ 'checklistActionsPopup-title'}}")
+          i.fa.fa-bars
+    each visibleItems
+      +checklistItemDetail(item = . checklist = checklist card = card)
+

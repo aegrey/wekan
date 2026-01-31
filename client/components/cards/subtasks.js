@@ -1,4 +1,5 @@
 import { ReactiveCache } from '/imports/reactiveCache';
+import { FlowRouter } from 'meteor/ostrio:flow-router-extra';
 
 BlazeComponent.extendComponent({
   addSubtask(event) {
@@ -61,10 +62,10 @@ BlazeComponent.extendComponent({
     textarea.focus();
   },
 
-  deleteSubtask() {
+  async deleteSubtask() {
     const subtask = this.currentData().subtask;
     if (subtask && subtask._id) {
-      subtask.archive();
+      await subtask.archive();
     }
   },
 
@@ -72,12 +73,12 @@ BlazeComponent.extendComponent({
     return ReactiveCache.getCurrentUser().isBoardAdmin();
   },
 
-  editSubtask(event) {
+  async editSubtask(event) {
     event.preventDefault();
     const textarea = this.find('textarea.js-edit-subtask-item');
     const title = textarea.value.trim();
     const subtask = this.currentData().subtask;
-    subtask.setTitle(title);
+    await subtask.setTitle(title);
   },
 
   pressKey(event) {
@@ -104,7 +105,19 @@ BlazeComponent.extendComponent({
 }).register('subtasks');
 
 BlazeComponent.extendComponent({
-  // ...
+  async toggleItem() {
+    const item = this.currentData().item;
+    if (item && item._id) {
+      await item.toggleItem();
+    }
+  },
+  events() {
+    return [
+      {
+        'click .js-subtasks-item .check-box-unicode': this.toggleItem,
+      },
+    ];
+  },
 }).register('subtaskItemDetail');
 
 BlazeComponent.extendComponent({
@@ -125,11 +138,11 @@ BlazeComponent.extendComponent({
             });
           }
         },
-        'click .js-delete-subtask' : Popup.afterConfirm('subtaskDelete', function () {
+        'click .js-delete-subtask' : Popup.afterConfirm('subtaskDelete', async function () {
           Popup.back(2);
           const subtask = this.subtask;
           if (subtask && subtask._id) {
-            subtask.archive();
+            await subtask.archive();
           }
         }),
       }

@@ -3,16 +3,6 @@ import { Meteor } from 'meteor/meteor';
 
 Triggers = new Mongo.Collection('triggers');
 
-Triggers.mutations({
-  rename(description) {
-    return {
-      $set: {
-        description,
-      },
-    };
-  },
-});
-
 Triggers.before.insert((userId, doc) => {
   doc.createdAt = new Date();
   doc.updatedAt = doc.createdAt;
@@ -36,6 +26,12 @@ Triggers.allow({
 });
 
 Triggers.helpers({
+  async rename(description) {
+    return await Triggers.updateAsync(this._id, {
+      $set: { description },
+    });
+  },
+
   description() {
     return this.desc;
   },
@@ -68,8 +64,8 @@ Triggers.helpers({
 });
 
 if (Meteor.isServer) {
-  Meteor.startup(() => {
-    Triggers._collection.createIndex({ modifiedAt: -1 });
+  Meteor.startup(async () => {
+    await Triggers._collection.createIndexAsync({ modifiedAt: -1 });
   });
 }
 

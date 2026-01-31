@@ -1,12 +1,20 @@
-About money, see [CONTRIBUTING.md](CONTRIBUTING.md)
 
-Security is very important to us. If you discover any issue regarding security, please disclose
-the information responsibly by sending an email to support (at) wekan.team using
-[this PGP public key](support-at-wekan.team_pgp-publickey.asc) and not by
-creating a GitHub issue. We will respond swiftly to fix verifiable security issues.
+## Responsible Security Disclosure
 
-We thank you with a place at our hall of fame page, that is
-at https://wekan.github.io/hall-of-fame
+- To send email, use [ProtonMail](https://proton.me) email address or use PGP key [security-at-wekan.fi.asc](security-at-wekan.fi.asc)
+- Send info about security issue ONLY to security@wekan.fi (that is Protomail email address). NOT TO ANYWHERE ELSE. NO CC, NO BCC.
+- Wait for new WeKan release that fixes security issue
+- If you approve, we thank you by adding you to Hall of Fame: https://wekan.fi/hall-of-fame/
+
+## Bonus Points
+
+- If you include code for fixing security issue
+
+## Losing Points
+
+- If you ask about [bounty](CONTRIBUTING.md). There is no bounty. WeKan is NOT Big Tech. WeKan is FLOSS.
+- If you forget to include vulnerability details.
+- If you send info about security issue to somewhere else than security@wekan.fi
 
 ## How should reports be formatted?
 
@@ -26,7 +34,7 @@ CWSS (optional): %cwss
 
 Anyone who reports a unique security issue in scope and does not disclose it to
 a third party before we have patched and updated may be upon their approval
-added to the Wekan Hall of Fame.
+added to the WeKan Hall of Fame https://wekan.fi/hall-of-fame/
 
 ## Which domains are in scope?
 
@@ -63,11 +71,6 @@ and by by companies that have 30k users.
 - If you are thinking about TLS MITM, look at https://github.com/caddyserver/caddy/issues/2530
 - Let's Encrypt TLS requires publicly accessible webserver, that Let's Encrypt TLS validation servers check.
 - If firewall limits to only allowed IP addresses, you may need non-Let's Encrypt TLS cert.
-- For On Premise:
-  - https://caddyserver.com/docs/automatic-https#local-https
-  - https://github.com/wekan/wekan/wiki/Caddy-Webserver-Config
-  - https://github.com/wekan/wekan/wiki/Azure
-  - https://github.com/wekan/wekan/wiki/Traefik-and-self-signed-SSL-certs
 
 ## XSS
 
@@ -172,6 +175,57 @@ Meteor.startup(() => {
 - https://github.com/wekan/wekan/blob/main/client/components/cards/attachments.js#L303-L312
 - https://wekan.github.io/hall-of-fame/filebleed/
 
+### Attachments: Forced download to prevent stored XSS
+
+- To prevent browser-side execution of uploaded content under the app origin, all attachment downloads are served with safe headers:
+  - `Content-Type: application/octet-stream`
+  - `Content-Disposition: attachment`
+  - `X-Content-Type-Options: nosniff`
+  - A restrictive `Content-Security-Policy` with `sandbox`
+- This means attachments are downloaded instead of rendered inline by default. This mitigates HTML/JS/SVG based stored XSS vectors.
+- Avatars and inline images remain supported but SVG uploads are blocked and never rendered inline.
+
+## Users: Client update restrictions
+
+- Client-side updates to user documents are limited to safe fields only:
+  - `username`
+  - `profile.*`
+- Sensitive fields are blocked from any client updates and can only be modified by server methods with authorization:
+  - `orgs`, `teams`, `roles`, `isAdmin`, `createdThroughApi`, `loginDisabled`, `authenticationMethod`, `services.*`, `emails.*`, `sessionData.*`
+- Attempts to update forbidden fields from the client are denied.
+- Admin operations like managing org/team membership or toggling flags must use server methods that check permissions.
+
+## Voting: integrity and authorization
+
+- Client updates to card `vote` fields are blocked to prevent forged votes and inconsistent policy enforcement.
+- Voting is performed via a server method that enforces:
+  - Authentication and board membership, or an explicit per-card flag allowing non-members to vote.
+  - Only the caller's own userId is added/removed from `vote.positive`/`vote.negative`.
+- This prevents members from fabricating other users' votes and ensures non-members cannot vote unless explicitly allowed.
+
+## Planning Poker: integrity and authorization
+
+- Client updates to card `poker` fields are blocked. All poker actions go through server methods that enforce:
+  - Authentication and board membership for configuration and results.
+  - For casting a poker vote, either board membership or an explicit per-card flag allowing non-members to participate.
+  - Only the caller's own userId is added/removed from the selected estimation bucket (e.g., one, two, five, etc.).
+- Methods cover setting/unsetting poker question/end, casting votes, replaying, and setting final estimation.
+
+## Attachment API: authentication and DoS prevention
+
+- The attachment API (`/api/attachment/*`) requires proper authentication using `X-User-Id` and `X-Auth-Token` headers.
+- Authentication validates tokens by hashing with `Accounts._hashLoginToken` and matching against stored login tokens, preventing identity spoofing.
+- Request handlers implement:
+  - 30-second timeout to prevent hanging connections.
+  - Request body size limits (50MB for uploads, 10MB for metadata operations).
+  - Proper error handling and guaranteed response completion.
+  - Request error event handlers to clean up failed connections.
+- This prevents:
+  - DoS attacks via concurrent unauthenticated or malformed requests.
+  - Identity spoofing by using arbitrary bearer tokens or user IDs.
+  - Resource exhaustion from hanging connections or excessive payloads.
+- Access control: all attachment operations verify board membership before allowing access.
+
 ## Brute force login protection
 
 - https://github.com/wekan/wekan/commit/23e5e1e3bd081699ce39ce5887db7e612616014d
@@ -218,9 +272,4 @@ Typical already known or "no impact" bugs such as:
 - Email spoofing, SPF, DMARC & DKIM. Wekan does not include email server.
 
 Wekan is Open Source with MIT license, and free to use also for commercial use.
-We welcome all fixes to improve security by email to security (at) wekan.team .
-
-## Bonus Points
-
-If your Responsible Security Disclosure includes code for fixing security issue,
-you get bonus points, as seen on [Hall of Fame](https://wekan.github.io/hall-of-fame).
+We welcome all fixes to improve security by email to security@wekan.fi

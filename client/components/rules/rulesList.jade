@@ -15,11 +15,11 @@ template(name="rulesList")
               | {{_ 'r-view-rule'}}
             if currentUser.isAdmin
               button.js-delete-rule
-                i.fa.fa-trash-o
+                i.fa.fa-trash
                 | {{_ 'r-delete-rule'}}
             else if currentUser.isBoardAdmin
               button.js-delete-rule
-                i.fa.fa-trash-o
+                i.fa.fa-trash
                 | {{_ 'r-delete-rule'}}
       else
         li.no-items-message {{_ 'r-no-rules' }}

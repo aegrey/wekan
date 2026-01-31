@@ -1,13 +1,10 @@
 #!/bin/bash
 
-
-echo "Recommended for development: Newest Ubuntu or Debian amd64, directly to SSD disk or dual boot, not VM. Works fast."
+echo "Recommended for development: Newest Debian or Ubuntu amd64 based distro, directly to SSD disk or dual boot, not VM. Works fast."
 echo "Note1: If you use other locale than en_US.UTF-8 , you need to additionally install en_US.UTF-8"
 echo "       with 'sudo dpkg-reconfigure locales' , so that MongoDB works correctly."
 echo "       You can still use any other locale as your main locale."
 echo "Note2: Console output is also logged to ../wekan-log.txt"
-
-#Below script installs newest node 8.x for Debian/Ubuntu/Mint.
 
 function pause(){
 	read -p "$*"
@@ -15,7 +12,7 @@ function pause(){
 
 echo
 PS3='Please enter your choice: '
-options=("Install Wekan dependencies" "Build Wekan" "Run Meteor for dev on http://localhost:4000" "Run Meteor for dev on http://localhost:4000 with trace warnings, and warnings using old Meteor API that will not exist in Meteor 3.0" "Run Meteor for dev on http://localhost:4000 with bundle visualizer" "Run Meteor for dev on http://CURRENT-IP-ADDRESS:4000" "Run Meteor for dev on http://CURRENT-IP-ADDRESS:4000 with MONGO_URL=mongodb://127.0.0.1:27019/wekan" "Run Meteor for dev on http://CUSTOM-IP-ADDRESS:PORT" "Save Meteor dependency chain to ../meteor-deps.txt" "Quit")
+options=("Install Wekan dependencies" "Build Wekan" "Run Meteor for dev on http://localhost:4000" "Run Meteor for dev on http://localhost:4000 with trace warnings, and warnings using old Meteor API that will not exist in Meteor 3.0" "Run Meteor for dev on http://localhost:4000 with bundle visualizer" "Run Meteor for dev on http://CURRENT-IP-ADDRESS:4000" "Run Meteor for dev on http://CURRENT-IP-ADDRESS:4000 with MONGO_URL=mongodb://127.0.0.1:27019/wekan" "Run Meteor for dev on http://CUSTOM-IP-ADDRESS:PORT" "Run tests" "Save Meteor dependency chain to ../meteor-deps.txt" "Quit")
 
 select opt in "${options[@]}"
 do
@@ -50,17 +47,51 @@ do
 			# Latest fibers for Meteor sudo mkdir -p /usr/local/lib/node_modules/fibers/.node-gyp sudo npm -g install fibers
 			sudo npm -g install @mapbox/node-pre-gyp
 			# Install Meteor, if it's not yet installed
-			sudo npm -g install meteor --unsafe-perm
+			sudo npm -g install meteor@2.16 --unsafe-perm
 			#sudo chown -R $(id -u):$(id -g) $HOME/.npm $HOME/.meteor
 		elif [[ "$OSTYPE" == "darwin"* ]]; then
-		        echo "macOS";
+			echo "macOS"
+			softwareupdate --install-rosetta --agree-to-license
 			brew install npm
+			# Install n for home directory version of Node.js 14.21.4
 			npm -g install n
-			export N_NODE_MIRROR=https://github.com/wekan/node-v14-esm/releases/download
+			directory_name="~/.n"
+			if [ ! -d "$directory_name" ]; then
+			  mkdir "$directory_name"
+			  echo "Directory '$directory_name' created."
+			else
+			  echo "Directory '$directory_name' already exists."
+			fi
+			directory_name="~/.npm"
+			if [ ! -d "$directory_name" ]; then
+				mkdir "$directory_name"
+				echo "Directory '$directory_name' created."
+			else
+				echo "Directory '$directory_name' already exists."
+			fi
+			if awk '/node-v14-esm/{found=1; exit} END{exit !found}' ~/.zshrc; then
+			  echo "The text node-v14-esm alread exists in .zshrc"
+			else
+			  echo "The text node-v14-esm does not exist in .zshrc, adding for install node v14"
+			  echo "export N_NODE_MIRROR=https://github.com/wekan/node-v14-esm/releases/download" >> ~/.zshrc
+			  export N_NODE_MIRROR="https://github.com/wekan/node-v14-esm/releases/download"
+			fi
+                        if awk '/export N_PREFIX/{found=1; exit} END{exit !found}' ~/.zshrc; then
+                          echo "The text export N_PREFIX for local ~/.n directory already exists in .zshrc"
+                        else
+                          # echo "The text export N_PREFIX for local ~/.n directory does not exist in .zshrc, adding."
+                          echo "export N_PREFIX=~/.n" >> ~/.zshrc
+			  export N_PREFIX=~/.n
+			fi
+			npm config set prefix '~/.npm'
+			npm -g install npm@latest
 			n 14.21.4
 			npm -g uninstall node-pre-gyp
 			npm -g install @mapbox/node-pre-gyp
-			npm -g install meteor
+			npm -g install node-gyp
+			npm -g install meteor@2.16
+			export PATH=~/.meteor:$PATH
+			exit;
 		elif [[ "$OSTYPE" == "cygwin" ]]; then
 		        # POSIX compatibility layer and Linux environment emulation for Windows
 		        echo "TODO: Add Cygwin";
@@ -97,12 +128,13 @@ do
 		#cd ..
 		#sudo chown -R $(id -u):$(id -g) $HOME/.npm $HOME/.meteor
 		rm -rf .build/bundle node_modules .meteor/local .build
-		meteor npm install
+		meteor npm install --production
 		meteor build .build --directory --platforms=web.browser
 		rm -rf .build/bundle/programs/web.browser.legacy
-		(cd .build/bundle/programs/server && rm -rf node_modules && chmod u+w *.json && meteor npm install)
-                (cd .build/bundle/programs/server/node_modules/fibers && node build.js)
-		(cd .build/bundle/programs/server/npm/node_modules/meteor/accounts-password && meteor npm remove bcrypt && meteor npm install bcrypt)
+		(cd .build/bundle/programs/server && rm -rf node_modules && chmod u+w *.json && meteor npm install --production)
+		#(cd .build/bundle/programs/server/node_modules/fibers && node build.js)
+		(cd .build/bundle/programs/server && npm install fibers --save-dev)
+		(cd .build/bundle/programs/server/npm/node_modules/meteor/accounts-password && meteor npm remove bcrypt && meteor npm install bcrypt --production)
 		# Cleanup
 		cd .build/bundle
 		find . -type d -name '*-garbage*' | xargs rm -rf
@@ -207,6 +239,12 @@ do
                 #---------------------------------------------------------------------
                 break
                 ;;
+
+		"Run tests")
+								echo "Running tests (import regression)."
+								node tests/wekanCreator.import.test.js
+								break
+								;;
 
     "Quit")
 		break

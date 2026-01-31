@@ -27,14 +27,6 @@ Checklists.attachSchema(
       type: Date,
       optional: true,
     },
-    showAtMinicard: {
-      /**
-       * Show at minicard. Default: false.
-       */
-      type: Boolean,
-      optional: true,
-      defaultValue: false,
-    },
     createdAt: {
       /**
        * Creation date of the checklist
@@ -70,6 +62,27 @@ Checklists.attachSchema(
        */
       type: Number,
       decimal: true,
+    },
+    hideCheckedChecklistItems: {
+      /**
+       * hide the checked checklist-items?
+       */
+      type: Boolean,
+      optional: true,
+    },
+    hideAllChecklistItems: {
+      /**
+       * hide all checklist items ?
+       */
+      type: Boolean,
+      optional: true,
+    },
+    showChecklistAtMinicard: {
+      /**
+       * show this checklist on minicard?
+       */
+      type: Boolean,
+      defaultValue: false,
     },
   }),
 );
@@ -124,38 +137,76 @@ Checklists.helpers({
     return ret;
   },
   isFinished() {
-    return 0 !== this.itemCount() && this.itemCount() === this.finishedCount();
+    let ret = this.hideAllChecklistItems;
+    if (!ret) {
+      ret = 0 !== this.itemCount() && this.itemCount() === this.finishedCount();
+    }
+    return ret;
   },
-  checkAllItems() {
-    const checkItems = ReactiveCache.getChecklistItems({ checklistId: this._id });
-    checkItems.forEach(function(item) {
-      item.check();
-    });
+  showChecklist(hideFinishedChecklistIfItemsAreHidden) {
+    let ret = true;
+    if (this.isFinished() && hideFinishedChecklistIfItemsAreHidden === true && (this.hideCheckedChecklistItems === true || this.hideAllChecklistItems)) {
+      ret = false;
+    }
+    return ret;
   },
-  uncheckAllItems() {
+  async checkAllItems() {
     const checkItems = ReactiveCache.getChecklistItems({ checklistId: this._id });
-    checkItems.forEach(function(item) {
-      item.uncheck();
-    });
+    for (const item of checkItems) {
+      await item.check();
+    }
+  },
+  async uncheckAllItems() {
+    const checkItems = ReactiveCache.getChecklistItems({ checklistId: this._id });
+    for (const item of checkItems) {
+      await item.uncheck();
+    }
   },
   itemIndex(itemId) {
     const items = ReactiveCache.getChecklist({ _id: this._id }).items;
     return _.pluck(items, '_id').indexOf(itemId);
   },
-  hasShowChecklistAtMinicard() {
-    return showAtMinicard || false;
+
+  async setTitle(title) {
+    return await Checklists.updateAsync(this._id, { $set: { title } });
+  },
+  /** move the checklist to another card
+   * @param newCardId move the checklist to this cardId
+   */
+  async move(newCardId) {
+    // Note: Activities and ChecklistItems updates are now handled server-side
+    // in the moveChecklist Meteor method to avoid client-side permission issues
+    return await Checklists.updateAsync(this._id, { $set: { cardId: newCardId } });
+  },
+  async toggleHideCheckedChecklistItems() {
+    return await Checklists.updateAsync(this._id, {
+      $set: { hideCheckedChecklistItems: !this.hideCheckedChecklistItems },
+    });
+  },
+  async toggleHideAllChecklistItems() {
+    return await Checklists.updateAsync(this._id, {
+      $set: { hideAllChecklistItems: !this.hideAllChecklistItems },
+    });
+  },
+  async toggleShowChecklistAtMinicard() {
+    return await Checklists.updateAsync(this._id, {
+      $set: { showChecklistAtMinicard: !this.showChecklistAtMinicard },
+    });
   },
 });
 
 Checklists.allow({
   insert(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot create checklists
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   update(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot edit checklists
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   remove(userId, doc) {
-    return allowIsBoardMemberByCard(userId, ReactiveCache.getCard(doc.cardId));
+    // ReadOnly users cannot delete checklists
+    return allowIsBoardMemberWithWriteAccessByCard(userId, ReactiveCache.getCard(doc.cardId));
   },
   fetch: ['userId', 'cardId'],
 });
@@ -167,56 +218,64 @@ Checklists.before.insert((userId, doc) => {
   }
 });
 
-Checklists.mutations({
-  setTitle(title) {
-    return { $set: { title } };
-  },
-  /** move the checklist to another card
-   * @param newCardId move the checklist to this cardId
-   */
-  move(newCardId) {
-    // update every activity
-    ReactiveCache.getActivities(
-      {checklistId: this._id}
-    ).forEach(activity => {
-      Activities.update(activity._id, {
-        $set: {
-          cardId: newCardId,
-        },
-      });
-    });
-    // update every checklist-item
-    ReactiveCache.getChecklistItems(
-      {checklistId: this._id}
-    ).forEach(checklistItem => {
-      ChecklistItems.update(checklistItem._id, {
-        $set: {
-          cardId: newCardId,
-        },
-      });
-    });
-    // update the checklist itself
-    return {
-      $set: {
-        cardId: newCardId,
-      },
-    };
-  },
-
-  toggleShowChecklistAtMinicard(checklistId) {
-    const value = this.hasShowChecklistAtMinicard();
-    return {
-      $set: {
-        'showAtMinicard': !value,
-      },
-    };
-  },
-});
 
 if (Meteor.isServer) {
-  Meteor.startup(() => {
-    Checklists._collection.createIndex({ modifiedAt: -1 });
-    Checklists._collection.createIndex({ cardId: 1, createdAt: 1 });
+  Meteor.methods({
+    moveChecklist(checklistId, newCardId) {
+      check(checklistId, String);
+      check(newCardId, String);
+
+      const checklist = ReactiveCache.getChecklist(checklistId);
+      if (!checklist) {
+        throw new Meteor.Error('checklist-not-found', 'Checklist not found');
+      }
+
+      const newCard = ReactiveCache.getCard(newCardId);
+      if (!newCard) {
+        throw new Meteor.Error('card-not-found', 'Target card not found');
+      }
+
+      // Check permissions on both source and target cards
+      const sourceCard = ReactiveCache.getCard(checklist.cardId);
+      if (!allowIsBoardMemberByCard(this.userId, sourceCard)) {
+        throw new Meteor.Error('not-authorized', 'Not authorized to move checklist from source card');
+      }
+      if (!allowIsBoardMemberByCard(this.userId, newCard)) {
+        throw new Meteor.Error('not-authorized', 'Not authorized to move checklist to target card');
+      }
+
+      // Update activities
+      ReactiveCache.getActivities({ checklistId }).forEach(activity => {
+        Activities.update(activity._id, {
+          $set: {
+            cardId: newCardId,
+          },
+        });
+      });
+
+      // Update checklist items
+      ReactiveCache.getChecklistItems({ checklistId }).forEach(checklistItem => {
+        ChecklistItems.update(checklistItem._id, {
+          $set: {
+            cardId: newCardId,
+          },
+        });
+      });
+
+      // Update the checklist itself
+      Checklists.update(checklistId, {
+        $set: {
+          cardId: newCardId,
+        },
+      });
+
+      return checklistId;
+    },
+  });
+
+  Meteor.startup(async () => {
+    await Checklists._collection.createIndexAsync({ modifiedAt: -1 });
+    await Checklists._collection.createIndexAsync({ cardId: 1, createdAt: 1 });
   });
 
   Checklists.after.insert((userId, doc) => {
@@ -271,6 +330,20 @@ if (Meteor.isServer) {
       const paramBoardId = req.params.boardId;
       const paramCardId = req.params.cardId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
+
+      // Verify the card belongs to the board
+      const card = ReactiveCache.getCard({
+        _id: paramCardId,
+        boardId: paramBoardId,
+      });
+      if (!card) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'Card not found or does not belong to the specified board' },
+        });
+        return;
+      }
+
       const checklists = ReactiveCache.getChecklists({ cardId: paramCardId }).map(function(
         doc,
       ) {
@@ -316,6 +389,20 @@ if (Meteor.isServer) {
       const paramChecklistId = req.params.checklistId;
       const paramCardId = req.params.cardId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
+
+      // Verify the card belongs to the board
+      const card = ReactiveCache.getCard({
+        _id: paramCardId,
+        boardId: paramBoardId,
+      });
+      if (!card) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'Card not found or does not belong to the specified board' },
+        });
+        return;
+      }
+
       const checklist = ReactiveCache.getChecklist({
         _id: paramChecklistId,
         cardId: paramCardId,
@@ -365,6 +452,20 @@ if (Meteor.isServer) {
       const addPermission = allowIsBoardMemberCommentOnly(req.userId, board);
       Authentication.checkAdminOrCondition(req.userId, addPermission);
       const paramCardId = req.params.cardId;
+
+      // Verify the card belongs to the board
+      const card = ReactiveCache.getCard({
+        _id: paramCardId,
+        boardId: paramBoardId,
+      });
+      if (!card) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'Card not found or does not belong to the specified board' },
+        });
+        return;
+      }
+
       const id = Checklists.insert({
         title: req.body.title,
         cardId: paramCardId,
@@ -417,8 +518,36 @@ if (Meteor.isServer) {
     '/api/boards/:boardId/cards/:cardId/checklists/:checklistId',
     function(req, res) {
       const paramBoardId = req.params.boardId;
+      const paramCardId = req.params.cardId;
       const paramChecklistId = req.params.checklistId;
       Authentication.checkBoardAccess(req.userId, paramBoardId);
+
+      // Verify the card belongs to the board
+      const card = ReactiveCache.getCard({
+        _id: paramCardId,
+        boardId: paramBoardId,
+      });
+      if (!card) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'Card not found or does not belong to the specified board' },
+        });
+        return;
+      }
+
+      // Verify the checklist exists and belongs to the card
+      const checklist = ReactiveCache.getChecklist({
+        _id: paramChecklistId,
+        cardId: paramCardId,
+      });
+      if (!checklist) {
+        JsonRoutes.sendResult(res, {
+          code: 404,
+          data: { error: 'Checklist not found or does not belong to the specified card' },
+        });
+        return;
+      }
+
       Checklists.remove({ _id: paramChecklistId });
       JsonRoutes.sendResult(res, {
         code: 200,

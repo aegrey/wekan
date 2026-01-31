@@ -9,6 +9,9 @@
       #-----------------------------------------------------------------
       # MongoDB database URL required
       export MONGO_URL=mongodb://127.0.0.1:27017/wekan
+      # MONGO_PASSWORD_FILE : MongoDB password file (Docker secrets)
+      # example : export MONGO_PASSWORD_FILE=/run/secrets/mongo_password
+      #export MONGO_PASSWORD_FILE=
       #-----------------------------------------------------------------
       # If port is 80, must change ROOT_URL to: http://YOUR-WEKAN-SERVER-IPv4-ADDRESS , like http://192.168.0.100
       # If port is not 80, must change ROOT_URL to: http://YOUR-WEKAN-SERVER-IPv4-ADDRESS:YOUR-PORT-NUMBER , like http://192.168.0.100:2000
@@ -37,6 +40,9 @@
       #   ap-southeast-1,ap-northeast-1,sa-east-1
       #
       #export S3='{"s3":{"key": "xxx", "secret": "xxx", "bucket": "xxx", "region": "xxx"}}'
+      # S3_SECRET_FILE : S3 secret file (Docker secrets)
+      # example : export S3_SECRET_FILE=/run/secrets/s3_secret
+      #export S3_SECRET_FILE=
       #-----------------------------------------------------------------
       # https://github.com/wekan/wekan/wiki/Troubleshooting-Mail
       # https://github.com/wekan/wekan-mongodb/blob/master/docker-compose.yml
@@ -46,6 +52,9 @@
       #export MAIL_SERVICE=Outlook365
       #export MAIL_SERVICE_USER=firstname.lastname@hotmail.com
       #export MAIL_SERVICE_PASSWORD=SecretPassword
+      # MAIL_SERVICE_PASSWORD_FILE : Password file for mail service (Docker secrets)
+      # example : export MAIL_SERVICE_PASSWORD_FILE=/run/secrets/mail_service_password
+      #export MAIL_SERVICE_PASSWORD_FILE=
       #---------------------------------------------
       #export KADIRA_OPTIONS_ENDPOINT=http://127.0.0.1:11011
       #---------------------------------------------
@@ -207,6 +216,9 @@
       #
       # Secret key generated during app registration:
       #export OAUTH2_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+      # OAUTH2_SECRET_FILE : Secret key file for OAuth2 (Docker secrets)
+      # example : export OAUTH2_SECRET_FILE=/run/secrets/oauth2_secret
+      #export OAUTH2_SECRET_FILE=
       #export OAUTH2_SERVER_URL=https://login.microsoftonline.com/
       #export OAUTH2_AUTH_ENDPOINT=/oauth2/v2.0/authorize
       #export OAUTH2_USERINFO_ENDPOINT=https://graph.microsoft.com/oidc/userinfo
@@ -230,11 +242,15 @@
       # OAuth2 login style: popup or redirect.
       #export OAUTH2_LOGIN_STYLE=redirect
       #export OAUTH2_CLIENT_ID=<Keycloak create Client ID>
-      #export OAUTH2_SERVER_URL=<Keycloak server name>/auth
+      #export OAUTH2_SERVER_URL=<Keycloak server URL - https://keycloak.example.com>
       #export OAUTH2_AUTH_ENDPOINT=/realms/<keycloak realm>/protocol/openid-connect/auth
       #export OAUTH2_USERINFO_ENDPOINT=/realms/<keycloak realm>/protocol/openid-connect/userinfo
       #export OAUTH2_TOKEN_ENDPOINT=/realms/<keycloak realm>/protocol/openid-connect/token
       #export OAUTH2_SECRET=<keycloak client secret>
+      #export OAUTH2_ID_MAP=sub
+      #export OAUTH2_USERNAME_MAP=preferred_username
+      #export OAUTH2_EMAIL_MAP=email
+      #export OAUTH2_FULLNAME_MAP=name
       #-----------------------------------------------------------------
       # ==== OAUTH2 DOORKEEPER ====
       # OAuth2 docs: https://github.com/wekan/wekan/wiki/OAuth2
@@ -371,6 +387,9 @@
       # LDAP_AUTHENTIFICATION_PASSWORD : The password for the search user
       # example : AUTHENTIFICATION_PASSWORD=admin
       #export LDAP_AUTHENTIFICATION_PASSWORD=
+      # LDAP_AUTHENTIFICATION_PASSWORD_FILE : The password file for the search user (Docker secrets)
+      # example : export LDAP_AUTHENTIFICATION_PASSWORD_FILE=/run/secrets/ldap_auth_password
+      #export LDAP_AUTHENTIFICATION_PASSWORD_FILE=
       #
       # LDAP_LOG_ENABLED : Enable logs for the module
       # example :  export LDAP_LOG_ENABLED=true
@@ -381,6 +400,9 @@
       #export LDAP_BACKGROUND_SYNC=false
       #
       # LDAP_BACKGROUND_SYNC_INTERVAL : At which interval does the background task sync in milliseconds
+      # The format must be as specified in:
+      # https://bunkat.github.io/later/parsers.html#text
+      #export LDAP_BACKGROUND_SYNC_INTERVAL=every 1 hours
       # At which interval does the background task sync in milliseconds.
       # Leave this unset, so it uses default, and does not crash.
       # https://github.com/wekan/wekan/issues/2354#issuecomment-515305722
@@ -555,6 +577,7 @@
       #bash -c "ulimit -s 65500; exec node --stack-size=65500 --trace-deprecation main.js"
       #bash -c "ulimit -s 65500; exec node --stack-size=65500 main.js"
       #-------------------- OPTIONAL SETTINGS END ----------------------
+      #bash -c "ulimit -s 65500; exec node --stack-size=65500 --max-old-space-size=8192 main.js"
       bash -c "ulimit -s 65500; exec node main.js"
       #node main.js
       #---------------------------------------------------------------------
